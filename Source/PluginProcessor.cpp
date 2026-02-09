@@ -1,0 +1,1644 @@
+/*
+  ==============================================================================
+
+    This file contains the basic framework code for a JUCE plugin processor.
+
+  ==============================================================================
+*/
+
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+//==============================================================================
+StaticCurrentsPluginAudioProcessor::StaticCurrentsPluginAudioProcessor()
+#ifndef JucePlugin_PreferredChannelConfigurations
+     : AudioProcessor (BusesProperties()
+                     #if ! JucePlugin_IsMidiEffect
+                       .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+                     #endif
+                       )
+#endif
+{
+    // Register audio file formats (WAV, AIFF)
+    formatManager.registerBasicFormats();
+    
+    // Add sampler voices for polyphony (8 voices)
+    for (int i = 0; i < 8; ++i)
+        sampler.addVoice (new juce::SamplerVoice());
+}
+
+StaticCurrentsPluginAudioProcessor::~StaticCurrentsPluginAudioProcessor()
+{
+}
+
+//==============================================================================
+const juce::String StaticCurrentsPluginAudioProcessor::getName() const
+{
+    return JucePlugin_Name;
+}
+
+bool StaticCurrentsPluginAudioProcessor::acceptsMidi() const
+{
+   #if JucePlugin_WantsMidiInput
+    return true;
+   #else
+    return false;
+   #endif
+}
+
+bool StaticCurrentsPluginAudioProcessor::producesMidi() const
+{
+   #if JucePlugin_ProducesMidiOutput
+    return true;
+   #else
+    return false;
+   #endif
+}
+
+bool StaticCurrentsPluginAudioProcessor::isMidiEffect() const
+{
+   #if JucePlugin_IsMidiEffect
+    return true;
+   #else
+    return false;
+   #endif
+}
+
+double StaticCurrentsPluginAudioProcessor::getTailLengthSeconds() const
+{
+    return 0.0;
+}
+
+int StaticCurrentsPluginAudioProcessor::getNumPrograms()
+{
+    return 1;   // NB: some hosts don't cope very well if you tell them there are 0 programs,
+                // so this should be at least 1, even if you're not really implementing programs.
+}
+
+int StaticCurrentsPluginAudioProcessor::getCurrentProgram()
+{
+    return 0;
+}
+
+void StaticCurrentsPluginAudioProcessor::setCurrentProgram (int index)
+{
+}
+
+const juce::String StaticCurrentsPluginAudioProcessor::getProgramName (int index)
+{
+    return {};
+}
+
+void StaticCurrentsPluginAudioProcessor::changeProgramName (int index, const juce::String& newName)
+{
+}
+
+//==============================================================================
+void StaticCurrentsPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+{
+    // Use this method as the place to do any pre-playback
+    // initialisation that you need..
+    currentSampleRate = sampleRate;
+    sampler.setCurrentPlaybackSampleRate (sampleRate);
+    
+    // Reset all filter stages for HPF/LPF
+    for (int i = 0; i < 8; ++i)
+    {
+        hpfL[i].reset();
+        hpfR[i].reset();
+        lpfL[i].reset();
+        lpfR[i].reset();
+    }
+    
+    // Reset peak filters
+    peak1L.reset();
+    peak1R.reset();
+    peak2L.reset();
+    peak2R.reset();
+    peak3L.reset();
+    peak3R.reset();
+    peak4L.reset();
+    peak4R.reset();
+    
+    // Initialize smoothed slope parameters
+    smoothedHpfSlope.reset(sampleRate, 0.05); // 50ms smoothing
+    smoothedLpfSlope.reset(sampleRate, 0.05);
+    smoothedHpfSlope.setCurrentAndTargetValue(hpfSlope.load());
+    smoothedLpfSlope.setCurrentAndTargetValue(lpfSlope.load());
+
+    tapeWowPhase = 0.0;
+    fuzzToneStateL = 0.0f;
+    fuzzToneStateR = 0.0f;
+    bitcrushCounterL = 0;
+    bitcrushCounterR = 0;
+    bitcrushHoldL = 0.0f;
+    bitcrushHoldR = 0.0f;
+}
+
+void StaticCurrentsPluginAudioProcessor::releaseResources()
+{
+    // When playback stops, you can use this as an opportunity to free up any
+    // spare memory, etc.
+}
+
+void StaticCurrentsPluginAudioProcessor::applyProfilePreset(int profileID)
+{
+    profileType.store(static_cast<float>(profileID));
+    auto resetAll = [this]
+    {
+        gain.store(0.7f);
+        pitch.store(1.0f);
+        compThresh.store(-20.0f);
+        compRatio.store(4.0f);
+        compAttack.store(0.01f);
+        compRelease.store(0.1f);
+        compMakeup.store(0.0f);
+        saturation.store(0.0f);
+        saturationType.store(1.0f);
+        tubeDrive.store(0.0f);
+        tubeWarmth.store(0.0f);
+        tubeBias.store(0.0f);
+        tubeOutput.store(1.0f);
+        transistorDrive.store(0.0f);
+        transistorBite.store(0.0f);
+        transistorClip.store(0.5f);
+        transistorOutput.store(1.0f);
+        tapeDrive.store(0.0f);
+        tapeWow.store(0.0f);
+        tapeHiss.store(0.0f);
+        tapeOutput.store(1.0f);
+        diodeDrive.store(0.0f);
+        diodeAsym.store(0.5f);
+        diodeClip.store(0.5f);
+        diodeOutput.store(1.0f);
+        fuzzDrive.store(0.0f);
+        fuzzGate.store(0.0f);
+        fuzzTone.store(0.5f);
+        fuzzOutput.store(1.0f);
+        bitDepth.store(16.0f);
+        bitRate.store(1.0f);
+        bitMix.store(0.0f);
+        bitOutput.store(1.0f);
+        hpfFreq.store(20.0f);
+        hpfSlope.store(1.0f);
+        peak1Freq.store(200.0f);
+        peak1Gain.store(0.0f);
+        peak1Q.store(1.0f);
+        peak2Freq.store(1000.0f);
+        peak2Gain.store(0.0f);
+        peak2Q.store(1.0f);
+        peak3Freq.store(3000.0f);
+        peak3Gain.store(0.0f);
+        peak3Q.store(1.0f);
+        peak4Freq.store(6000.0f);
+        peak4Gain.store(0.0f);
+        peak4Q.store(1.0f);
+        lpfFreq.store(20000.0f);
+    };
+
+    resetAll();
+    switch (profileID)
+    {
+        case 0: // -init- Neutral/Default with all parameters unaffected
+            break;
+            
+        case 1: // Wax Cylinder - vintage compressed sound with Tube saturation
+            saturation.store(1.0f);  // Set saturation mix to full
+            saturationType.store(1.0f); // Tube
+            tubeDrive.store(7.0f);
+            tubeWarmth.store(0.8f);
+            tubeBias.store(0.3f);
+            tubeOutput.store(1.0f);
+            // EQ: Warm, compressed, rolling off highs
+            hpfFreq.store(50.0f);
+            peak1Freq.store(200.0f);
+            peak1Gain.store(4.0f);
+            peak1Q.store(0.8f);
+            peak2Freq.store(800.0f);
+            peak2Gain.store(2.0f);
+            peak2Q.store(0.9f);
+            peak3Freq.store(2500.0f);
+            peak3Gain.store(-2.0f);
+            peak3Q.store(1.0f);
+            peak4Freq.store(6000.0f);
+            peak4Gain.store(-6.0f);
+            peak4Q.store(0.7f);
+            lpfFreq.store(8000.0f);
+            break;
+            
+        case 2: // Vinyl - warm tape-like with Tape saturation and hiss
+            saturation.store(1.0f);
+            saturationType.store(3.0f); // Tape
+            tapeDrive.store(5.0f);
+            tapeWow.store(0.15f);
+            tapeHiss.store(0.4f);
+            tapeOutput.store(1.0f);
+            // EQ: Gentle bass boost, high-end presence with surface noise
+            hpfFreq.store(40.0f);
+            peak1Freq.store(150.0f);
+            peak1Gain.store(3.0f);
+            peak1Q.store(0.7f);
+            peak2Freq.store(1000.0f);
+            peak2Gain.store(1.0f);
+            peak2Q.store(1.0f);
+            peak3Freq.store(3000.0f);
+            peak3Gain.store(2.0f);
+            peak3Q.store(1.2f);
+            peak4Freq.store(7000.0f);
+            peak4Gain.store(-3.0f);
+            peak4Q.store(0.8f);
+            lpfFreq.store(12000.0f);
+            break;
+            
+        case 3: // Cassette - tape with heavy wow and hiss
+            saturation.store(1.0f);
+            saturationType.store(3.0f); // Tape
+            tapeDrive.store(6.0f);
+            tapeWow.store(0.7f);
+            tapeHiss.store(0.6f);
+            tapeOutput.store(0.95f);
+            // EQ: Compressed mids, reduced highs due to tape saturation
+            hpfFreq.store(60.0f);
+            peak1Freq.store(180.0f);
+            peak1Gain.store(2.5f);
+            peak1Q.store(0.8f);
+            peak2Freq.store(900.0f);
+            peak2Gain.store(-1.0f);
+            peak2Q.store(1.1f);
+            peak3Freq.store(2800.0f);
+            peak3Gain.store(1.5f);
+            peak3Q.store(0.9f);
+            peak4Freq.store(5000.0f);
+            peak4Gain.store(-5.0f);
+            peak4Q.store(0.7f);
+            lpfFreq.store(7000.0f);
+            break;
+            
+        case 4: // Reel to Reel - clean professional tape
+            saturation.store(1.0f);
+            saturationType.store(3.0f); // Tape
+            tapeDrive.store(3.0f);
+            tapeWow.store(0.05f);
+            tapeHiss.store(0.05f);
+            tapeOutput.store(1.0f);
+            // EQ: Flat response, minimal coloration
+            hpfFreq.store(20.0f);
+            peak1Freq.store(200.0f);
+            peak1Gain.store(0.0f);
+            peak1Q.store(1.0f);
+            peak2Freq.store(1000.0f);
+            peak2Gain.store(0.0f);
+            peak2Q.store(1.0f);
+            peak3Freq.store(3000.0f);
+            peak3Gain.store(0.0f);
+            peak3Q.store(1.0f);
+            peak4Freq.store(6000.0f);
+            peak4Gain.store(0.0f);
+            peak4Q.store(1.0f);
+            lpfFreq.store(20000.0f);
+            break;
+            
+        case 5: // Neve - smooth warm console with Tube saturation
+            saturation.store(1.0f);
+            saturationType.store(1.0f); // Tube
+            tubeDrive.store(4.0f);
+            tubeWarmth.store(0.7f);
+            tubeBias.store(0.1f);
+            tubeOutput.store(1.05f);
+            // EQ: Smooth warm with low-end presence and presence peak
+            hpfFreq.store(30.0f);
+            peak1Freq.store(200.0f);
+            peak1Gain.store(2.5f);
+            peak1Q.store(0.75f);
+            peak2Freq.store(600.0f);
+            peak2Gain.store(1.0f);
+            peak2Q.store(0.9f);
+            peak3Freq.store(3500.0f);
+            peak3Gain.store(3.0f);
+            peak3Q.store(1.1f);
+            peak4Freq.store(8000.0f);
+            peak4Gain.store(-2.0f);
+            peak4Q.store(0.8f);
+            lpfFreq.store(18000.0f);
+            break;
+            
+        case 6: // API - bright punchy console with Transistor
+            saturation.store(1.0f);
+            saturationType.store(2.0f); // Transistor
+            transistorDrive.store(5.0f);
+            transistorBite.store(0.7f);
+            transistorClip.store(0.3f);
+            transistorOutput.store(1.0f);
+            // EQ: Bright presence with aggressive upper mids
+            hpfFreq.store(35.0f);
+            peak1Freq.store(150.0f);
+            peak1Gain.store(2.0f);
+            peak1Q.store(0.8f);
+            peak2Freq.store(750.0f);
+            peak2Gain.store(3.0f);
+            peak2Q.store(1.0f);
+            peak3Freq.store(3000.0f);
+            peak3Gain.store(4.0f);
+            peak3Q.store(1.2f);
+            peak4Freq.store(6000.0f);
+            peak4Gain.store(2.0f);
+            peak4Q.store(0.9f);
+            lpfFreq.store(20000.0f);
+            break;
+            
+        case 7: // Blown Speaker - extreme degraded sound with Fuzz
+            saturation.store(1.0f);
+            saturationType.store(5.0f); // Fuzz
+            fuzzDrive.store(9.0f);
+            fuzzGate.store(0.4f);
+            fuzzTone.store(0.2f);
+            fuzzOutput.store(0.8f);
+            // EQ: Heavily filtered, crushed mids, rolled off everything
+            hpfFreq.store(80.0f);
+            peak1Freq.store(200.0f);
+            peak1Gain.store(-2.0f);
+            peak1Q.store(0.7f);
+            peak2Freq.store(800.0f);
+            peak2Gain.store(-4.0f);
+            peak2Q.store(0.8f);
+            peak3Freq.store(2000.0f);
+            peak3Gain.store(-3.0f);
+            peak3Q.store(0.9f);
+            peak4Freq.store(5000.0f);
+            peak4Gain.store(-6.0f);
+            peak4Q.store(0.7f);
+            lpfFreq.store(4000.0f);
+            break;
+            
+        case 8: // HiFi - clean minimal saturation with Diode
+            saturation.store(1.0f);
+            saturationType.store(4.0f); // Diode
+            diodeDrive.store(1.0f);
+            diodeAsym.store(0.5f);
+            diodeClip.store(0.2f);
+            diodeOutput.store(1.05f);
+            // EQ: Bright, clear, extended treble
+            hpfFreq.store(20.0f);
+            peak1Freq.store(200.0f);
+            peak1Gain.store(1.0f);
+            peak1Q.store(0.9f);
+            peak2Freq.store(1000.0f);
+            peak2Gain.store(0.5f);
+            peak2Q.store(1.0f);
+            peak3Freq.store(4000.0f);
+            peak3Gain.store(2.0f);
+            peak3Q.store(1.0f);
+            peak4Freq.store(8000.0f);
+            peak4Gain.store(3.0f);
+            peak4Q.store(1.1f);
+            lpfFreq.store(20000.0f);
+            break;
+            
+        case 9: // LoFi - heavily degraded with Bitcrush
+            saturation.store(1.0f);
+            saturationType.store(6.0f); // Bitcrush
+            bitDepth.store(6.0f);
+            bitRate.store(8.0f);
+            bitMix.store(0.9f);
+            bitOutput.store(0.85f);
+            // EQ: Extreme filtering, telephone/radio effect
+            hpfFreq.store(100.0f);
+            peak1Freq.store(150.0f);
+            peak1Gain.store(-3.0f);
+            peak1Q.store(0.7f);
+            peak2Freq.store(600.0f);
+            peak2Gain.store(5.0f);
+            peak2Q.store(0.8f);
+            peak3Freq.store(2000.0f);
+            peak3Gain.store(3.0f);
+            peak3Q.store(0.9f);
+            peak4Freq.store(5000.0f);
+            peak4Gain.store(-5.0f);
+            peak4Q.store(0.8f);
+            lpfFreq.store(3500.0f);
+            break;
+            
+        default:
+            break;
+    }
+    
+    profileType.store(static_cast<float>(profileID));
+}
+
+#ifndef JucePlugin_PreferredChannelConfigurations
+bool StaticCurrentsPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+  #if JucePlugin_IsMidiEffect
+    juce::ignoreUnused (layouts);
+    return true;
+  #else
+    // Support mono or stereo output
+    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
+     && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+        return false;
+
+    // Allow stereo input for recording (even though this is a synth)
+    // Input can be disabled (empty), mono, or stereo
+    auto inputChannels = layouts.getMainInputChannelSet();
+    if (inputChannels != juce::AudioChannelSet::disabled()
+     && inputChannels != juce::AudioChannelSet::mono()
+     && inputChannels != juce::AudioChannelSet::stereo())
+        return false;
+
+    return true;
+  #endif
+}
+#endif
+
+void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+{
+    juce::ScopedNoDenormals noDenormals;
+    auto totalNumInputChannels  = getTotalNumInputChannels();
+    auto totalNumOutputChannels = getTotalNumOutputChannels();
+
+    // Trigger sample playback if requested
+    if (shouldTriggerNote.exchange(false))
+    {
+        // Calculate MIDI note based on pitch parameter
+        // pitch: 0.5 = -12 semitones, 1.0 = 0 semitones, 2.0 = +12 semitones
+        float pitchValue = pitch.load();
+        float semitones = 12.0f * std::log2(pitchValue);
+        int midiNote = 60 + static_cast<int>(std::round(semitones));
+        midiNote = juce::jlimit(0, 127, midiNote);
+        
+        lastNoteTriggered = midiNote;
+        lastPitchValue = pitchValue;
+        samplesSinceNoteOn = 0;
+        isNoteCurrentlyPlaying = true;
+        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
+    }
+    
+    // Stop sample playback if requested
+    if (shouldStopNote.exchange(false))
+    {
+        sampler.allNotesOff(1, true);
+        if (lastNoteTriggered >= 0)
+        {
+            midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
+            lastNoteTriggered = -1;
+        }
+        isNoteCurrentlyPlaying = false;
+        samplesSinceNoteOn = 0;
+    }
+
+    // Recording incoming audio - copy input before clearing
+    if (recording && totalNumInputChannels > 0)
+    {
+        const int numSamples = buffer.getNumSamples();
+        const int numChannels = juce::jmin (2, totalNumInputChannels);
+        
+        // Debug: Check if we're actually receiving input
+        static int debugCounter = 0;
+        if (++debugCounter % 100 == 0) // Log every 100 blocks
+        {
+            float maxLevel = 0.0f;
+            for (int ch = 0; ch < totalNumInputChannels; ++ch)
+            {
+                auto* data = buffer.getReadPointer(ch);
+                for (int i = 0; i < numSamples; ++i)
+                    maxLevel = juce::jmax(maxLevel, std::abs(data[i]));
+            }
+            DBG("Recording - Input Channels: " + juce::String(totalNumInputChannels) +
+                ", Samples: " + juce::String(numSamples) +
+                ", Max Level: " + juce::String(maxLevel, 4) +
+                ", Position: " + juce::String(recordPosition));
+        }
+        
+        // Ensure we have space in the record buffer
+        if (recordPosition + numSamples < recordBuffer.getNumSamples())
+        {
+            // Copy from input buffer to record buffer
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                recordBuffer.copyFrom (ch, recordPosition, buffer.getReadPointer(ch), numSamples);
+            }
+            recordPosition += numSamples;
+        }
+        else
+        {
+            // Buffer full, stop recording
+            stopRecording();
+        }
+    }
+
+    // Clear any output channels that don't contain input data
+    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
+        buffer.clear (i, 0, buffer.getNumSamples());
+    
+    // Only clear input channels if NOT recording (to prevent feedback during playback)
+    if (!recording)
+    {
+        for (auto i = 0; i < totalNumInputChannels; ++i)
+            buffer.clear (i, 0, buffer.getNumSamples());
+    }
+
+    // Handle seek position
+    float seekPos = seekPosition.exchange(-1.0f);
+    if (seekPos >= 0.0f && sampler.getNumSounds() > 0)
+    {
+        // Stop current playback
+        sampler.allNotesOff(1, true);
+        
+        // Trigger new note at seek position
+        // Note: JUCE sampler doesn't support direct seeking, so we restart playback
+        float pitchValue = pitch.load();
+        float semitones = 12.0f * std::log2(pitchValue);
+        int midiNote = 60 + static_cast<int>(std::round(semitones));
+        midiNote = juce::jlimit(0, 127, midiNote);
+        
+        lastNoteTriggered = midiNote;
+        lastPitchValue = pitchValue;
+        samplesSinceNoteOn = 0;
+        isNoteCurrentlyPlaying = true;
+        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
+    }
+
+    // Handle real-time pitch changes during playback
+    float currentPitchValue = pitch.load();
+    if (isNoteCurrentlyPlaying && std::abs(currentPitchValue - lastPitchValue) > 0.01f)
+    {
+        // Pitch has changed - retrigger note at new pitch
+        if (lastNoteTriggered >= 0)
+        {
+            sampler.allNotesOff(1, true);
+            midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
+        }
+        
+        float semitones = 12.0f * std::log2(currentPitchValue);
+        int midiNote = 60 + static_cast<int>(std::round(semitones));
+        midiNote = juce::jlimit(0, 127, midiNote);
+        
+        lastNoteTriggered = midiNote;
+        lastPitchValue = currentPitchValue;
+        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
+        // Keep samplesSinceNoteOn to maintain position
+    }
+    
+    // Render sampler output with current parameters
+    sampler.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
+    
+    // Track playback position
+    if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
+    {
+        samplesSinceNoteOn += buffer.getNumSamples();
+        float totalLength = sampleLength.load();
+        if (totalLength > 0.0f && currentSampleRate > 0.0)
+        {
+            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
+            playbackPosition.store(currentPos);
+            
+            // Auto-stop when sample ends
+            if (currentPos >= totalLength)
+            {
+                isNoteCurrentlyPlaying = false;
+                sampler.allNotesOff(1, true);
+                midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
+                lastNoteTriggered = -1;
+                samplesSinceNoteOn = 0;
+            }
+        }
+    }
+    else if (lastNoteTriggered < 0)
+    {
+        playbackPosition.store(0.0f);
+        samplesSinceNoteOn = 0;
+    }
+    
+    // Update sample length tracking
+    if (sampler.getNumSounds() > 0)
+    {
+        auto* sound = dynamic_cast<juce::SamplerSound*>(sampler.getSound(0).get());
+        if (sound != nullptr)
+        {
+            sampleLength.store(static_cast<float>(sound->getAudioData()->getNumSamples()) / static_cast<float>(currentSampleRate));
+        }
+    }
+    
+    // Apply effects chain if not bypassed
+    if (!bypass.load())
+    {
+        const int numSamples = buffer.getNumSamples();
+        
+        // 1. Gain (applied first, before any processing)
+        float currentGain = gain.load();
+        buffer.applyGain (currentGain);
+        
+        // 2. 6-Band Parametric EQ - Update filter coefficients
+        // Smooth slope parameter changes to avoid clicks
+        smoothedHpfSlope.setTargetValue(hpfSlope.load());
+        smoothedLpfSlope.setTargetValue(lpfSlope.load());
+        
+        // Skip smoothing for this buffer and just get the current target
+        // This updates the internal state without processing sample-by-sample
+        smoothedHpfSlope.skip(numSamples);
+        smoothedLpfSlope.skip(numSamples);
+        
+        // HPF (High-pass filter) - Use Butterworth response for smooth curves
+        auto hpf_freq = hpfFreq.load();
+        float hpf_slope_value = smoothedHpfSlope.getCurrentValue();
+        int hpf_stages = (hpf_slope_value > 0.0f) ? juce::jlimit(1, 8, static_cast<int>(std::round(hpf_slope_value))) : 0;
+        
+        if (hpf_stages > 0)
+        {
+            auto hpfCoeffs = juce::IIRCoefficients::makeHighPass(currentSampleRate, hpf_freq, 0.707);
+            for (int i = 0; i < 8; ++i)
+            {
+                hpfL[i].setCoefficients(hpfCoeffs);
+                hpfR[i].setCoefficients(hpfCoeffs);
+            }
+        }
+        
+        // Peak Band 1
+        auto p1_freq = peak1Freq.load();
+        auto p1_gain = peak1Gain.load();
+        auto p1_q = peak1Q.load();
+        auto peak1Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p1_freq, p1_q, juce::Decibels::decibelsToGain(p1_gain * 1.5f));
+        peak1L.setCoefficients(peak1Coeffs);
+        peak1R.setCoefficients(peak1Coeffs);
+        
+        // Peak Band 2
+        auto p2_freq = peak2Freq.load();
+        auto p2_gain = peak2Gain.load();
+        auto p2_q = peak2Q.load();
+        auto peak2Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p2_freq, p2_q, juce::Decibels::decibelsToGain(p2_gain * 1.5f));
+        peak2L.setCoefficients(peak2Coeffs);
+        peak2R.setCoefficients(peak2Coeffs);
+        
+        // Peak Band 3
+        auto p3_freq = peak3Freq.load();
+        auto p3_gain = peak3Gain.load();
+        auto p3_q = peak3Q.load();
+        auto peak3Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p3_freq, p3_q, juce::Decibels::decibelsToGain(p3_gain * 1.5f));
+        peak3L.setCoefficients(peak3Coeffs);
+        peak3R.setCoefficients(peak3Coeffs);
+        
+        // Peak Band 4
+        auto p4_freq = peak4Freq.load();
+        auto p4_gain = peak4Gain.load();
+        auto p4_q = peak4Q.load();
+        auto peak4Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p4_freq, p4_q, juce::Decibels::decibelsToGain(p4_gain * 1.5f));
+        peak4L.setCoefficients(peak4Coeffs);
+        peak4R.setCoefficients(peak4Coeffs);
+        
+        // LPF (Low-pass filter) - Use Butterworth response for smooth curves
+        auto lpf_freq = lpfFreq.load();
+        float lpf_slope_value = smoothedLpfSlope.getCurrentValue();
+        int lpf_stages = (lpf_slope_value > 0.0f) ? juce::jlimit(1, 8, static_cast<int>(std::round(lpf_slope_value))) : 0;
+        
+        if (lpf_stages > 0)
+        {
+            auto lpfCoeffs = juce::IIRCoefficients::makeLowPass(currentSampleRate, lpf_freq, 0.707);
+            for (int i = 0; i < 8; ++i)
+            {
+                lpfL[i].setCoefficients(lpfCoeffs);
+                lpfR[i].setCoefficients(lpfCoeffs);
+            }
+        }
+        
+        // Apply all EQ bands in series
+        if (buffer.getNumChannels() > 0)
+        {
+            // HPF - Apply cascaded stages for Butterworth response (only if slope > 0)
+            if (hpf_stages > 0)
+            {
+                for (int stage = 0; stage < hpf_stages; ++stage)
+                    hpfL[stage].processSamples(buffer.getWritePointer(0), numSamples);
+            }
+            
+            peak1L.processSamples(buffer.getWritePointer(0), numSamples);
+            peak2L.processSamples(buffer.getWritePointer(0), numSamples);
+            peak3L.processSamples(buffer.getWritePointer(0), numSamples);
+            peak4L.processSamples(buffer.getWritePointer(0), numSamples);
+            
+            // LPF - Apply cascaded stages for Butterworth response (only if slope > 0)
+            if (lpf_stages > 0)
+            {
+                for (int stage = 0; stage < lpf_stages; ++stage)
+                    lpfL[stage].processSamples(buffer.getWritePointer(0), numSamples);
+            }
+        }
+        if (buffer.getNumChannels() > 1)
+        {
+            // HPF - Apply cascaded stages for Butterworth response (only if slope > 0)
+            if (hpf_stages > 0)
+            {
+                for (int stage = 0; stage < hpf_stages; ++stage)
+                    hpfR[stage].processSamples(buffer.getWritePointer(1), numSamples);
+            }
+            
+            peak1R.processSamples(buffer.getWritePointer(1), numSamples);
+            peak2R.processSamples(buffer.getWritePointer(1), numSamples);
+            peak3R.processSamples(buffer.getWritePointer(1), numSamples);
+            peak4R.processSamples(buffer.getWritePointer(1), numSamples);
+            
+            // LPF - Apply cascaded stages for Butterworth response (only if slope > 0)
+            if (lpf_stages > 0)
+            {
+                for (int stage = 0; stage < lpf_stages; ++stage)
+                    lpfR[stage].processSamples(buffer.getWritePointer(1), numSamples);
+            }
+        }
+        
+        // 3. FET-Style Compression (1176-inspired)
+        float threshold = compThresh.load();
+        float ratio = compRatio.load();
+        float attackTime = compAttack.load();
+        float releaseTime = compRelease.load();
+        float makeup = compMakeup.load();
+        
+        // FET compressors have faster time constants
+        float attackCoeff = 1.0f - std::exp(-1.0f / (attackTime * static_cast<float>(currentSampleRate) * 0.5f));
+        float releaseCoeff = 1.0f - std::exp(-1.0f / (releaseTime * static_cast<float>(currentSampleRate)));
+        
+        for (int i = 0; i < numSamples; ++i)
+        {
+            // Peak detection
+            float peak = 0.0f;
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                peak = juce::jmax (peak, std::abs (buffer.getSample (ch, i)));
+            
+            float peakDb = juce::Decibels::gainToDecibels (peak + 0.0001f);
+            float gainReduction = 0.0f;
+            
+            // Soft-knee compression (FET characteristic)
+            if (peakDb > threshold - compKneeWidth / 2.0f)
+            {
+                if (peakDb < threshold + compKneeWidth / 2.0f)
+                {
+                    // In the knee region - smooth transition
+                    float kneeInput = peakDb - threshold + compKneeWidth / 2.0f;
+                    float kneeSquared = kneeInput * kneeInput;
+                    gainReduction = kneeSquared / (2.0f * compKneeWidth) * (1.0f - 1.0f / ratio);
+                }
+                else
+                {
+                    // Above knee - full compression with slight FET saturation
+                    float excess = peakDb - threshold;
+                    gainReduction = excess * (1.0f - 1.0f / ratio);
+                    
+                    // Add subtle FET-style harmonic saturation at high compression
+                    if (gainReduction > 10.0f)
+                    {
+                        float satAmount = (gainReduction - 10.0f) * 0.02f;
+                        gainReduction += satAmount * satAmount;
+                    }
+                }
+            }
+            
+            // Envelope follower with FET-style timing
+            float coeff = (gainReduction > compEnvelope) ? attackCoeff : releaseCoeff;
+            compEnvelope += (gainReduction - compEnvelope) * coeff;
+            
+            // Apply compression with makeup gain and FET-style slight odd harmonics
+            float compGain = juce::Decibels::decibelsToGain (-compEnvelope + makeup);
+            
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                float sample = buffer.getSample (ch, i) * compGain;
+                
+                // Very subtle FET-style coloration (odd harmonics) when compressing
+                if (compEnvelope > 3.0f)
+                {
+                    float colorAmount = juce::jmin(compEnvelope * 0.008f, 0.08f);
+                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.1f;
+                }
+                
+                buffer.setSample (ch, i, sample);
+            }
+        }
+        
+        // 4. Saturation (Post-Compression)
+        float satMix = juce::jlimit (0.0f, 1.0f, saturation.load());
+        int satType = static_cast<int>(saturationType.load());
+        int profile = static_cast<int>(profileType.load());
+
+        float driveBoost = 1.0f;
+        float brightness = 1.0f;
+        float outputTrim = 1.0f;
+        float crushBoost = 1.0f;
+        float hissBoost = 1.0f;
+
+        switch (profile)
+        {
+            case 1: // Wax Cylinder - very compressed, dark, warm
+                driveBoost = 1.5f;
+                brightness = 0.65f;
+                crushBoost = 1.4f;
+                hissBoost = 1.3f;
+                outputTrim = 0.95f;
+                break;
+            case 2: // Vinyl - warm tape with hiss
+                driveBoost = 1.25f;
+                brightness = 0.80f;
+                crushBoost = 1.1f;
+                hissBoost = 1.35f;
+                outputTrim = 1.0f;
+                break;
+            case 3: // Cassette - tape with wow and hiss
+                driveBoost = 1.35f;
+                brightness = 0.75f;
+                crushBoost = 1.2f;
+                hissBoost = 1.5f;
+                outputTrim = 0.98f;
+                break;
+            case 4: // Reel to Reel - clean professional
+                driveBoost = 1.05f;
+                brightness = 0.98f;
+                crushBoost = 1.0f;
+                hissBoost = 0.7f;
+                outputTrim = 1.0f;
+                break;
+            case 5: // Neve - warm smooth console
+                driveBoost = 1.2f;
+                brightness = 0.92f;
+                crushBoost = 1.0f;
+                hissBoost = 0.8f;
+                outputTrim = 0.98f;
+                break;
+            case 6: // API - bright punchy console
+                driveBoost = 1.35f;
+                brightness = 1.1f;
+                crushBoost = 1.05f;
+                hissBoost = 0.85f;
+                outputTrim = 0.98f;
+                break;
+            case 7: // Blown Speaker - degraded broken
+                driveBoost = 2.3f;
+                brightness = 0.6f;
+                crushBoost = 1.5f;
+                hissBoost = 1.4f;
+                outputTrim = 0.7f;
+                break;
+            case 8: // HiFi - clean accurate
+                driveBoost = 1.01f;
+                brightness = 1.15f;
+                crushBoost = 1.0f;
+                hissBoost = 0.5f;
+                outputTrim = 1.05f;
+                break;
+            case 9: // LoFi - heavily degraded bitcrushed
+                driveBoost = 1.7f;
+                brightness = 0.68f;
+                crushBoost = 2.0f;
+                hissBoost = 1.3f;
+                outputTrim = 0.85f;
+                break;
+            default:
+                break;
+        }
+
+        if (satMix > 0.0f)
+        {
+            float tubeDriveVal = tubeDrive.load() * driveBoost;
+            float tubeWarmthVal = tubeWarmth.load();
+            float tubeBiasVal = tubeBias.load();
+            float tubeOutVal = tubeOutput.load();
+
+            float transistorDriveVal = transistorDrive.load() * driveBoost;
+            float transistorBiteVal = transistorBite.load();
+            float transistorClipVal = transistorClip.load();
+            float transistorOutVal = transistorOutput.load();
+
+            float tapeDriveVal = tapeDrive.load() * driveBoost;
+            float tapeWowVal = tapeWow.load();
+            float tapeHissVal = tapeHiss.load();
+            float tapeOutVal = tapeOutput.load();
+
+            float diodeDriveVal = diodeDrive.load() * driveBoost;
+            float diodeAsymVal = diodeAsym.load();
+            float diodeClipVal = diodeClip.load();
+            float diodeOutVal = diodeOutput.load();
+
+            float fuzzDriveVal = fuzzDrive.load() * driveBoost;
+            float fuzzGateVal = fuzzGate.load();
+            float fuzzToneVal = fuzzTone.load();
+            float fuzzOutVal = fuzzOutput.load();
+
+            float bitDepthVal = bitDepth.load();
+            float bitRateVal = bitRate.load();
+            float bitMixVal = bitMix.load();
+            float bitOutVal = bitOutput.load();
+
+            const float wowRate = 0.2f + (tapeWowVal * 2.0f);
+            const float wowInc = static_cast<float>((juce::MathConstants<double>::twoPi * wowRate) / currentSampleRate);
+
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                auto* data = buffer.getWritePointer (ch);
+                int& crushCounter = (ch == 0) ? bitcrushCounterL : bitcrushCounterR;
+                float& crushHold = (ch == 0) ? bitcrushHoldL : bitcrushHoldR;
+                float& fuzzState = (ch == 0) ? fuzzToneStateL : fuzzToneStateR;
+
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    float dry = data[i];
+                    float processed = dry;
+
+                    float tubeWeight = (tubeDriveVal / 10.0f) * 0.65f
+                                     + tubeWarmthVal * 0.18f
+                                     + std::abs (tubeBiasVal) * 0.07f
+                                     + std::abs (tubeOutVal - 1.0f) * 0.10f;
+                    float transistorWeight = (transistorDriveVal / 10.0f) * 0.55f
+                                           + transistorBiteVal * 0.22f
+                                           + transistorClipVal * 0.13f
+                                           + std::abs (transistorOutVal - 1.0f) * 0.10f;
+                    float tapeWeight = (tapeDriveVal / 10.0f) * 0.55f
+                                     + tapeWowVal * 0.18f
+                                     + tapeHissVal * 0.17f
+                                     + std::abs (tapeOutVal - 1.0f) * 0.10f;
+                    float diodeWeight = (diodeDriveVal / 10.0f) * 0.55f
+                                      + diodeAsymVal * 0.18f
+                                      + diodeClipVal * 0.17f
+                                      + std::abs (diodeOutVal - 1.0f) * 0.10f;
+                    float fuzzWeight = (fuzzDriveVal / 10.0f) * 0.55f
+                                     + fuzzGateVal * 0.15f
+                                     + (1.0f - fuzzToneVal) * 0.20f
+                                     + std::abs (fuzzOutVal - 1.0f) * 0.10f;
+                    float depthWeight = (16.0f - bitDepthVal) / 14.0f;
+                    float rateWeight = (bitRateVal - 1.0f) / 15.0f;
+                    float bitWeight = bitMixVal * 0.55f
+                                    + depthWeight * 0.2f
+                                    + rateWeight * 0.15f
+                                    + std::abs (bitOutVal - 1.0f) * 0.10f;
+
+                    tubeWeight = juce::jlimit (0.0f, 1.0f, tubeWeight);
+                    transistorWeight = juce::jlimit (0.0f, 1.0f, transistorWeight);
+                    tapeWeight = juce::jlimit (0.0f, 1.0f, tapeWeight);
+                    diodeWeight = juce::jlimit (0.0f, 1.0f, diodeWeight);
+                    fuzzWeight = juce::jlimit (0.0f, 1.0f, fuzzWeight);
+                    bitWeight = juce::jlimit (0.0f, 1.0f, bitWeight);
+
+                    const float focusBoost = 1.1f;
+                    if (satType == 1) tubeWeight *= focusBoost;
+                    if (satType == 2) transistorWeight *= focusBoost;
+                    if (satType == 3) tapeWeight *= focusBoost;
+                    if (satType == 4) diodeWeight *= focusBoost;
+                    if (satType == 5) fuzzWeight *= focusBoost;
+                    if (satType == 6) bitWeight *= focusBoost;
+
+                    float tubeDrive = 1.0f + tubeDriveVal * 0.9f;
+                    float tubeBias = tubeBiasVal * 0.25f;
+                    float tubeWarm = (0.6f + tubeWarmthVal * 1.2f) * brightness;
+                    float tubeDriven = (dry + tubeBias) * tubeDrive;
+                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.15f * tubeWarmthVal);
+                    float tubeSat = std::tanh ((tubeDriven + tubeEven) * tubeWarm);
+                    float tubeComp = 1.0f / (1.0f + std::abs (tubeSat) * 0.6f);
+                    float tubeOut = tubeSat * tubeComp * tubeOutVal * outputTrim;
+
+                    float transDrive = 1.0f + transistorDriveVal * 1.1f;
+                    float transBite = juce::jlimit (0.0f, 1.0f, transistorBiteVal);
+                    float transClip = 0.9f - (transistorClipVal * 0.7f);
+                    float transDriven = dry * transDrive;
+                    float transClipped = juce::jlimit (-transClip, transClip, transDriven);
+                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 2.0f));
+                    float transHard = transClipped / transClip;
+                    float transSat = juce::jlimit (-1.0f, 1.0f, transSoft * (1.0f - transBite) + transHard * transBite);
+                    float transOut = transSat * transistorOutVal * outputTrim;
+
+                    tapeWowPhase += wowInc;
+                    if (tapeWowPhase > juce::MathConstants<double>::twoPi)
+                        tapeWowPhase -= juce::MathConstants<double>::twoPi;
+
+                    float wowMod = 1.0f + std::sin (static_cast<float>(tapeWowPhase)) * tapeWowVal * 0.02f;
+                    float tapeDrive = 1.0f + tapeDriveVal * 0.7f * wowMod;
+                    float tapeDriven = dry * tapeDrive;
+                    float tapeComp = tapeDriven / (1.0f + std::abs (tapeDriven) * 0.7f);
+                    float tapeSat = std::tanh (tapeComp * (1.0f + brightness * 0.12f));
+                    float tapeLoss = 1.0f - tapeHissVal * 0.35f;
+                    float tapeOut = tapeSat * tapeLoss * tapeOutVal * outputTrim;
+
+                    float diodeDrive = 1.0f + diodeDriveVal * 1.2f;
+                    float diodeAsym = juce::jlimit (0.0f, 1.0f, diodeAsymVal);
+                    float diodeClip = 0.95f - (diodeClipVal * 0.75f);
+                    float diodeDriven = dry * diodeDrive;
+                    float diodeClipped = juce::jlimit (-diodeClip, diodeClip, diodeDriven);
+                    float diodeRect = (1.0f - diodeAsym) * diodeClipped + diodeAsym * std::abs (diodeClipped);
+                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 1.1f)) * brightness;
+                    float diodeOut = diodeSat * diodeOutVal * outputTrim;
+
+                    float fuzzDrive = 1.0f + fuzzDriveVal * 1.6f;
+                    float fuzzGate = fuzzGateVal * 0.05f;
+                    float fuzzTone = juce::jlimit (0.0f, 1.0f, fuzzToneVal);
+                    float fuzzDriven = dry * fuzzDrive;
+                    float fuzzed = juce::jlimit (-1.0f, 1.0f, fuzzDriven);
+                    if (std::abs (fuzzed) < fuzzGate)
+                        fuzzed *= std::abs (fuzzed) / juce::jmax (0.001f, fuzzGate);
+                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.35f;
+                    fuzzState += fuzzAlpha * (fuzzed - fuzzState);
+                    float fuzzOut = fuzzState * fuzzOutVal * outputTrim;
+
+                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal - (crushBoost - 1.0f) * 2.0f)));
+                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal * crushBoost)));
+                    float step = 2.0f / static_cast<float> (1 << bits);
+
+                    float crushSample = dry;
+                    if (rate > 1)
+                    {
+                        if (crushCounter <= 0)
+                        {
+                            crushHold = crushSample;
+                            crushCounter = rate - 1;
+                        }
+                        else
+                        {
+                            --crushCounter;
+                            crushSample = crushHold;
+                        }
+                    }
+
+                    float quant = std::floor (crushSample / step) * step;
+                    float bitWet = juce::jlimit (0.0f, 1.0f, bitMixVal);
+                    float bitOut = (dry * (1.0f - bitWet) + quant * bitWet) * bitOutVal * outputTrim;
+
+                    float weightSum = tubeWeight + transistorWeight + tapeWeight + diodeWeight + fuzzWeight + bitWeight;
+                    if (weightSum < 0.0001f)
+                    {
+                        processed = dry;
+                    }
+                    else
+                    {
+                        processed = (tubeOut * tubeWeight
+                                     + transOut * transistorWeight
+                                     + tapeOut * tapeWeight
+                                     + diodeOut * diodeWeight
+                                     + fuzzOut * fuzzWeight
+                                     + bitOut * bitWeight) / weightSum;
+                    }
+
+                    data[i] = dry * (1.0f - satMix) + processed * satMix;
+                }
+            }
+        }
+    }
+    else
+    {
+        // When bypassed, still apply gain
+        float currentGain = gain.load();
+        buffer.applyGain (currentGain);
+    }
+}
+
+//==============================================================================
+bool StaticCurrentsPluginAudioProcessor::hasEditor() const
+{
+    return true; // (change this to false if you choose to not supply an editor)
+}
+
+juce::AudioProcessorEditor* StaticCurrentsPluginAudioProcessor::createEditor()
+{
+    return new StaticCurrentsPluginAudioProcessorEditor (*this);
+}
+
+//==============================================================================
+void StaticCurrentsPluginAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    // You should use this method to store your parameters in the memory block.
+    // You could do that either as raw data, or use the XML or ValueTree classes
+    // as intermediaries to make it easy to save and load complex data.
+}
+
+void StaticCurrentsPluginAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    // You should use this method to restore your parameters from this memory block,
+    // whose contents will have been created by the getStateInformation() call.
+}
+
+void StaticCurrentsPluginAudioProcessor::startRecording()
+{
+    if (!recording)
+    {
+        recording = true;
+        recordingActive.store(true);
+        recordPosition = 0;
+        recordSampleRate = getSampleRate();
+        
+        // Allocate 30 seconds of stereo recording buffer
+        int maxSamples = static_cast<int> (recordSampleRate * 30.0);
+        recordBuffer.setSize (2, maxSamples, false, true, true);
+        recordBuffer.clear();
+    }
+}
+
+void StaticCurrentsPluginAudioProcessor::stopRecording()
+{
+    if (recording && recordPosition > 0)
+    {
+        recording = false;
+        recordingActive.store(false);
+        
+        // Trim the buffer to actual recorded length
+        juce::AudioBuffer<float> trimmedBuffer (recordBuffer.getNumChannels(), recordPosition);
+        for (int ch = 0; ch < recordBuffer.getNumChannels(); ++ch)
+            trimmedBuffer.copyFrom (ch, 0, recordBuffer, ch, 0, recordPosition);
+        
+        // Create a temporary file to save the recording
+        auto tempFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                            .getChildFile ("recorded_sample.wav");
+        
+        juce::WavAudioFormat wavFormat;
+        std::unique_ptr<juce::OutputStream> outStream (tempFile.createOutputStream());
+        
+        if (outStream != nullptr)
+        {
+            auto numChannels = static_cast<unsigned int>(trimmedBuffer.getNumChannels());
+            auto channelLayout = (numChannels == 1) ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
+            
+            auto options = juce::AudioFormatWriterOptions{}
+                               .withSampleRate (recordSampleRate)
+                               .withChannelLayout (channelLayout)
+                               .withBitsPerSample (24);
+            auto writer = wavFormat.createWriterFor (outStream, options);
+            
+            if (writer != nullptr)
+            {
+                writer->writeFromAudioSampleBuffer (trimmedBuffer, 0, trimmedBuffer.getNumSamples());
+
+                
+                // Load the recorded sample into the sampler
+                loadSampleFromFile (tempFile);
+            }
+        }
+    }
+}
+
+void StaticCurrentsPluginAudioProcessor::loadSampleFromFile (const juce::File& file)
+{
+    auto* reader = formatManager.createReaderFor (file);
+    
+    if (reader != nullptr)
+    {
+        // Create SamplerSound with stereo buffer
+        // Maps to all MIDI notes (0-127) with max velocity range
+        juce::BigInteger allNotes;
+        allNotes.setRange (0, 128, true);
+        
+        sampler.clearSounds();
+        sampler.addSound (new juce::SamplerSound ("Sample",
+                                                   *reader,
+                                                   allNotes,
+                                                   60,   // root note (middle C)
+                                                   0.0,  // no attack envelope (play full sample)
+                                                   0.0,  // no release envelope (play full sample)
+                                                   60.0  // max sample length in seconds
+                                                   ));
+        
+        delete reader;
+    }
+}
+
+//==============================================================================
+// This creates new instances of the plugin..
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new StaticCurrentsPluginAudioProcessor();
+}
+
+void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File& outputFile)
+{
+    // Get the sample from the sampler
+    if (sampler.getNumSounds() == 0)
+        return;
+    
+    auto* samplerSound = dynamic_cast<juce::SamplerSound*>(sampler.getSound(0).get());
+    if (samplerSound == nullptr)
+        return;
+    
+    auto* audioData = samplerSound->getAudioData();
+    int numChannels = audioData->getNumChannels();
+    int numSamples = audioData->getNumSamples();
+    
+    if (numSamples == 0)
+        return;
+    
+    // Create a copy of the audio data to process
+    juce::AudioBuffer<float> processedBuffer(numChannels, numSamples);
+    for (int ch = 0; ch < numChannels; ++ch)
+        processedBuffer.copyFrom(ch, 0, *audioData, ch, 0, numSamples);
+    
+    // Apply the same effects chain as in processBlock (if not bypassed)
+    if (!bypass.load())
+    {
+        // 1. Saturation
+        float satMix = juce::jlimit (0.0f, 1.0f, saturation.load());
+        int satType = static_cast<int>(saturationType.load());
+        int profile = static_cast<int>(profileType.load());
+
+        float driveBoost = 1.0f;
+        float brightness = 1.0f;
+        float outputTrim = 1.0f;
+        float crushBoost = 1.0f;
+
+        switch (profile)
+        {
+            case 1: driveBoost = 1.5f; brightness = 0.65f; crushBoost = 1.4f; outputTrim = 0.95f; break;
+            case 2: driveBoost = 1.25f; brightness = 0.80f; crushBoost = 1.1f; outputTrim = 1.0f; break;
+            case 3: driveBoost = 1.35f; brightness = 0.75f; crushBoost = 1.2f; outputTrim = 0.98f; break;
+            case 4: driveBoost = 1.05f; brightness = 0.98f; crushBoost = 1.0f; outputTrim = 1.0f; break;
+            case 5: driveBoost = 1.2f; brightness = 0.92f; crushBoost = 1.0f; outputTrim = 0.98f; break;
+            case 6: driveBoost = 1.35f; brightness = 1.1f; crushBoost = 1.05f; outputTrim = 0.98f; break;
+            case 7: driveBoost = 2.3f; brightness = 0.6f; crushBoost = 1.5f; outputTrim = 0.7f; break;
+            case 8: driveBoost = 1.01f; brightness = 1.15f; crushBoost = 1.0f; outputTrim = 1.05f; break;
+            case 9: driveBoost = 1.7f; brightness = 0.68f; crushBoost = 2.0f; outputTrim = 0.85f; break;
+            default: break;
+        }
+
+        if (satMix > 0.0f)
+        {
+            float tubeDriveVal = tubeDrive.load() * driveBoost;
+            float tubeWarmthVal = tubeWarmth.load();
+            float tubeBiasVal = tubeBias.load();
+            float tubeOutVal = tubeOutput.load();
+
+            float transistorDriveVal = transistorDrive.load() * driveBoost;
+            float transistorBiteVal = transistorBite.load();
+            float transistorClipVal = transistorClip.load();
+            float transistorOutVal = transistorOutput.load();
+
+            float tapeDriveVal = tapeDrive.load() * driveBoost;
+            float tapeWowVal = tapeWow.load();
+            float tapeHissVal = tapeHiss.load();
+            float tapeOutVal = tapeOutput.load();
+
+            float diodeDriveVal = diodeDrive.load() * driveBoost;
+            float diodeAsymVal = diodeAsym.load();
+            float diodeClipVal = diodeClip.load();
+            float diodeOutVal = diodeOutput.load();
+
+            float fuzzDriveVal = fuzzDrive.load() * driveBoost;
+            float fuzzGateVal = fuzzGate.load();
+            float fuzzToneVal = fuzzTone.load();
+            float fuzzOutVal = fuzzOutput.load();
+
+            float bitDepthVal = bitDepth.load();
+            float bitRateVal = bitRate.load();
+            float bitMixVal = bitMix.load();
+            float bitOutVal = bitOutput.load();
+
+            const float wowRate = 0.2f + (tapeWowVal * 2.0f);
+            const float wowInc = static_cast<float>((juce::MathConstants<double>::twoPi * wowRate) / currentSampleRate);
+            double wowPhase = 0.0;
+            float fuzzStateL = 0.0f;
+            float fuzzStateR = 0.0f;
+            int crushCounterL = 0;
+            int crushCounterR = 0;
+            float crushHoldL = 0.0f;
+            float crushHoldR = 0.0f;
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto* data = processedBuffer.getWritePointer(ch);
+                int& crushCounter = (ch == 0) ? crushCounterL : crushCounterR;
+                float& crushHold = (ch == 0) ? crushHoldL : crushHoldR;
+                float& fuzzState = (ch == 0) ? fuzzStateL : fuzzStateR;
+
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    float dry = data[i];
+                    float processed = dry;
+
+                    float tubeWeight = (tubeDriveVal / 10.0f) * 0.65f
+                                     + tubeWarmthVal * 0.18f
+                                     + std::abs (tubeBiasVal) * 0.07f
+                                     + std::abs (tubeOutVal - 1.0f) * 0.10f;
+                    float transistorWeight = (transistorDriveVal / 10.0f) * 0.55f
+                                           + transistorBiteVal * 0.22f
+                                           + transistorClipVal * 0.13f
+                                           + std::abs (transistorOutVal - 1.0f) * 0.10f;
+                    float tapeWeight = (tapeDriveVal / 10.0f) * 0.55f
+                                     + tapeWowVal * 0.18f
+                                     + tapeHissVal * 0.17f
+                                     + std::abs (tapeOutVal - 1.0f) * 0.10f;
+                    float diodeWeight = (diodeDriveVal / 10.0f) * 0.55f
+                                      + diodeAsymVal * 0.18f
+                                      + diodeClipVal * 0.17f
+                                      + std::abs (diodeOutVal - 1.0f) * 0.10f;
+                    float fuzzWeight = (fuzzDriveVal / 10.0f) * 0.55f
+                                     + fuzzGateVal * 0.15f
+                                     + (1.0f - fuzzToneVal) * 0.20f
+                                     + std::abs (fuzzOutVal - 1.0f) * 0.10f;
+                    float depthWeight = (16.0f - bitDepthVal) / 14.0f;
+                    float rateWeight = (bitRateVal - 1.0f) / 15.0f;
+                    float bitWeight = bitMixVal * 0.55f
+                                    + depthWeight * 0.2f
+                                    + rateWeight * 0.15f
+                                    + std::abs (bitOutVal - 1.0f) * 0.10f;
+
+                    tubeWeight = juce::jlimit (0.0f, 1.0f, tubeWeight);
+                    transistorWeight = juce::jlimit (0.0f, 1.0f, transistorWeight);
+                    tapeWeight = juce::jlimit (0.0f, 1.0f, tapeWeight);
+                    diodeWeight = juce::jlimit (0.0f, 1.0f, diodeWeight);
+                    fuzzWeight = juce::jlimit (0.0f, 1.0f, fuzzWeight);
+                    bitWeight = juce::jlimit (0.0f, 1.0f, bitWeight);
+
+                    const float focusBoost = 1.1f;
+                    if (satType == 1) tubeWeight *= focusBoost;
+                    if (satType == 2) transistorWeight *= focusBoost;
+                    if (satType == 3) tapeWeight *= focusBoost;
+                    if (satType == 4) diodeWeight *= focusBoost;
+                    if (satType == 5) fuzzWeight *= focusBoost;
+                    if (satType == 6) bitWeight *= focusBoost;
+
+                    float tubeDrive = 1.0f + tubeDriveVal * 0.9f;
+                    float tubeBias = tubeBiasVal * 0.25f;
+                    float tubeWarm = (0.6f + tubeWarmthVal * 1.2f) * brightness;
+                    float tubeDriven = (dry + tubeBias) * tubeDrive;
+                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.15f * tubeWarmthVal);
+                    float tubeSat = std::tanh ((tubeDriven + tubeEven) * tubeWarm);
+                    float tubeComp = 1.0f / (1.0f + std::abs (tubeSat) * 0.6f);
+                    float tubeOut = tubeSat * tubeComp * tubeOutVal * outputTrim;
+
+                    float transDrive = 1.0f + transistorDriveVal * 1.1f;
+                    float transBite = juce::jlimit (0.0f, 1.0f, transistorBiteVal);
+                    float transClip = 0.9f - (transistorClipVal * 0.7f);
+                    float transDriven = dry * transDrive;
+                    float transClipped = juce::jlimit (-transClip, transClip, transDriven);
+                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 2.0f));
+                    float transHard = transClipped / transClip;
+                    float transSat = juce::jlimit (-1.0f, 1.0f, transSoft * (1.0f - transBite) + transHard * transBite);
+                    float transOut = transSat * transistorOutVal * outputTrim;
+
+                    wowPhase += wowInc;
+                    if (wowPhase > juce::MathConstants<double>::twoPi)
+                        wowPhase -= juce::MathConstants<double>::twoPi;
+
+                    float wowMod = 1.0f + std::sin (static_cast<float>(wowPhase)) * tapeWowVal * 0.02f;
+                    float tapeDrive = 1.0f + tapeDriveVal * 0.7f * wowMod;
+                    float tapeDriven = dry * tapeDrive;
+                    float tapeComp = tapeDriven / (1.0f + std::abs (tapeDriven) * 0.7f);
+                    float tapeSat = std::tanh (tapeComp * (1.0f + brightness * 0.12f));
+                    float tapeLoss = 1.0f - tapeHissVal * 0.35f;
+                    float tapeOut = tapeSat * tapeLoss * tapeOutVal * outputTrim;
+
+                    float diodeDrive = 1.0f + diodeDriveVal * 1.2f;
+                    float diodeAsym = juce::jlimit (0.0f, 1.0f, diodeAsymVal);
+                    float diodeClip = 0.95f - (diodeClipVal * 0.75f);
+                    float diodeDriven = dry * diodeDrive;
+                    float diodeClipped = juce::jlimit (-diodeClip, diodeClip, diodeDriven);
+                    float diodeRect = (1.0f - diodeAsym) * diodeClipped + diodeAsym * std::abs (diodeClipped);
+                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 1.1f)) * brightness;
+                    float diodeOut = diodeSat * diodeOutVal * outputTrim;
+
+                    float fuzzDrive = 1.0f + fuzzDriveVal * 1.6f;
+                    float fuzzGate = fuzzGateVal * 0.05f;
+                    float fuzzTone = juce::jlimit (0.0f, 1.0f, fuzzToneVal);
+                    float fuzzDriven = dry * fuzzDrive;
+                    float fuzzed = juce::jlimit (-1.0f, 1.0f, fuzzDriven);
+                    if (std::abs (fuzzed) < fuzzGate)
+                        fuzzed *= std::abs (fuzzed) / juce::jmax (0.001f, fuzzGate);
+                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.35f;
+                    fuzzState += fuzzAlpha * (fuzzed - fuzzState);
+                    float fuzzOut = fuzzState * fuzzOutVal * outputTrim;
+
+                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal - (crushBoost - 1.0f) * 2.0f)));
+                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal * crushBoost)));
+                    float step = 2.0f / static_cast<float> (1 << bits);
+
+                    float crushSample = dry;
+                    if (rate > 1)
+                    {
+                        if (crushCounter <= 0)
+                        {
+                            crushHold = crushSample;
+                            crushCounter = rate - 1;
+                        }
+                        else
+                        {
+                            --crushCounter;
+                            crushSample = crushHold;
+                        }
+                    }
+
+                    float quant = std::floor (crushSample / step) * step;
+                    float bitWet = juce::jlimit (0.0f, 1.0f, bitMixVal);
+                    float bitOut = (dry * (1.0f - bitWet) + quant * bitWet) * bitOutVal * outputTrim;
+
+                    float weightSum = tubeWeight + transistorWeight + tapeWeight + diodeWeight + fuzzWeight + bitWeight;
+                    if (weightSum < 0.0001f)
+                    {
+                        processed = dry;
+                    }
+                    else
+                    {
+                        processed = (tubeOut * tubeWeight
+                                     + transOut * transistorWeight
+                                     + tapeOut * tapeWeight
+                                     + diodeOut * diodeWeight
+                                     + fuzzOut * fuzzWeight
+                                     + bitOut * bitWeight) / weightSum;
+                    }
+
+                    data[i] = dry * (1.0f - satMix) + processed * satMix;
+                }
+            }
+        }
+        
+        // 2. 6-Band Parametric EQ - Create fresh filters for offline processing
+        juce::IIRFilter hpfL_offline, hpfR_offline;
+        juce::IIRFilter peak1L_offline, peak1R_offline;
+        juce::IIRFilter peak2L_offline, peak2R_offline;
+        juce::IIRFilter peak3L_offline, peak3R_offline;
+        juce::IIRFilter peak4L_offline, peak4R_offline;
+        juce::IIRFilter lpfL_offline, lpfR_offline;
+        
+        // HPF
+        auto hpf_freq = hpfFreq.load();
+        auto hpfCoeffs = juce::IIRCoefficients::makeHighPass(currentSampleRate, hpf_freq);
+        hpfL_offline.setCoefficients(hpfCoeffs);
+        hpfR_offline.setCoefficients(hpfCoeffs);
+        
+        // Peak 1
+        auto p1_freq = peak1Freq.load();
+        auto p1_gain = peak1Gain.load();
+        auto p1_q = peak1Q.load();
+        auto peak1Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p1_freq, p1_q, juce::Decibels::decibelsToGain(p1_gain));
+        peak1L_offline.setCoefficients(peak1Coeffs);
+        peak1R_offline.setCoefficients(peak1Coeffs);
+        
+        // Peak 2
+        auto p2_freq = peak2Freq.load();
+        auto p2_gain = peak2Gain.load();
+        auto p2_q = peak2Q.load();
+        auto peak2Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p2_freq, p2_q, juce::Decibels::decibelsToGain(p2_gain));
+        peak2L_offline.setCoefficients(peak2Coeffs);
+        peak2R_offline.setCoefficients(peak2Coeffs);
+        
+        // Peak 3
+        auto p3_freq = peak3Freq.load();
+        auto p3_gain = peak3Gain.load();
+        auto p3_q = peak3Q.load();
+        auto peak3Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p3_freq, p3_q, juce::Decibels::decibelsToGain(p3_gain));
+        peak3L_offline.setCoefficients(peak3Coeffs);
+        peak3R_offline.setCoefficients(peak3Coeffs);
+        
+        // Peak 4
+        auto p4_freq = peak4Freq.load();
+        auto p4_gain = peak4Gain.load();
+        auto p4_q = peak4Q.load();
+        auto peak4Coeffs = juce::IIRCoefficients::makePeakFilter(currentSampleRate, p4_freq, p4_q, juce::Decibels::decibelsToGain(p4_gain));
+        peak4L_offline.setCoefficients(peak4Coeffs);
+        peak4R_offline.setCoefficients(peak4Coeffs);
+        
+        // LPF
+        auto lpf_freq = lpfFreq.load();
+        auto lpfCoeffs = juce::IIRCoefficients::makeLowPass(currentSampleRate, lpf_freq);
+        lpfL_offline.setCoefficients(lpfCoeffs);
+        lpfR_offline.setCoefficients(lpfCoeffs);
+        
+        // Apply all EQ bands in series
+        if (numChannels > 0)
+        {
+            hpfL_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+            peak1L_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+            peak2L_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+            peak3L_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+            peak4L_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+            lpfL_offline.processSamples(processedBuffer.getWritePointer(0), numSamples);
+        }
+        if (numChannels > 1)
+        {
+            hpfR_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+            peak1R_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+            peak2R_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+            peak3R_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+            peak4R_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+            lpfR_offline.processSamples(processedBuffer.getWritePointer(1), numSamples);
+        }
+        
+        // 3. FET-Style Compression (matches real-time processing)
+        float threshold = compThresh.load();
+        float ratio = compRatio.load();
+        float attackTime = compAttack.load();
+        float releaseTime = compRelease.load();
+        float makeup = compMakeup.load();
+        float envelope = 0.0f;
+        
+        // FET compressor time constants
+        float attackCoeff = 1.0f - std::exp(-1.0f / (attackTime * static_cast<float>(currentSampleRate) * 0.5f));
+        float releaseCoeff = 1.0f - std::exp(-1.0f / (releaseTime * static_cast<float>(currentSampleRate)));
+        
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float peak = 0.0f;
+            for (int ch = 0; ch < numChannels; ++ch)
+                peak = juce::jmax(peak, std::abs(processedBuffer.getSample(ch, i)));
+            
+            float peakDb = juce::Decibels::gainToDecibels(peak + 0.0001f);
+            float gainReduction = 0.0f;
+            
+            // Soft-knee compression
+            if (peakDb > threshold - compKneeWidth / 2.0f)
+            {
+                if (peakDb < threshold + compKneeWidth / 2.0f)
+                {
+                    float kneeInput = peakDb - threshold + compKneeWidth / 2.0f;
+                    float kneeSquared = kneeInput * kneeInput;
+                    gainReduction = kneeSquared / (2.0f * compKneeWidth) * (1.0f - 1.0f / ratio);
+                }
+                else
+                {
+                    float excess = peakDb - threshold;
+                    gainReduction = excess * (1.0f - 1.0f / ratio);
+                    
+                    if (gainReduction > 10.0f)
+                    {
+                        float satAmount = (gainReduction - 10.0f) * 0.02f;
+                        gainReduction += satAmount * satAmount;
+                    }
+                }
+            }
+            
+            float coeff = (gainReduction > envelope) ? attackCoeff : releaseCoeff;
+            envelope += (gainReduction - envelope) * coeff;
+            
+            float compGain = juce::Decibels::decibelsToGain(-envelope + makeup);
+            
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float sample = processedBuffer.getSample(ch, i) * compGain;
+                
+                if (envelope > 3.0f)
+                {
+                    float colorAmount = juce::jmin(envelope * 0.008f, 0.08f);
+                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.1f;
+                }
+                
+                processedBuffer.setSample(ch, i, sample);
+            }
+        }
+    }
+    
+    // Apply gain
+    float currentGain = gain.load();
+    processedBuffer.applyGain(currentGain);
+    
+    // Write to file
+    outputFile.deleteFile();
+    std::unique_ptr<juce::OutputStream> outputStream (outputFile.createOutputStream());
+    
+    if (outputStream != nullptr)
+    {
+        std::unique_ptr<juce::AudioFormat> format;
+        int bitDepth = 24;
+        
+        // Detect format from file extension
+        if (outputFile.hasFileExtension(".wav"))
+        {
+            format = std::make_unique<juce::WavAudioFormat>();
+            // Check filename for bit depth hint
+            if (outputFile.getFileNameWithoutExtension().containsIgnoreCase("16"))
+                bitDepth = 16;
+            else
+                bitDepth = 24;
+        }
+        else if (outputFile.hasFileExtension(".mp3"))
+        {
+            #if JUCE_USE_LAME_AUDIO_FORMAT
+            format = std::make_unique<juce::LAMEEncoderAudioFormat>(outputFile);
+            bitDepth = 16;
+            #else
+            // MP3 encoding not available - fall back to WAV
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                "MP3 Not Available",
+                "MP3 encoding requires LAME library. Saving as WAV instead.");
+            format = std::make_unique<juce::WavAudioFormat>();
+            bitDepth = 24;
+            #endif
+        }
+        else if (outputFile.hasFileExtension(".ogg"))
+        {
+            format = std::make_unique<juce::OggVorbisAudioFormat>();
+            bitDepth = 16; // OGG uses quality setting, not bit depth
+        }
+        else if (outputFile.hasFileExtension(".flac"))
+        {
+            format = std::make_unique<juce::FlacAudioFormat>();
+            bitDepth = 24;
+        }
+        else
+        {
+            // Default to WAV
+            format = std::make_unique<juce::WavAudioFormat>();
+            bitDepth = 24;
+        }
+        
+        auto numChannels = static_cast<unsigned int>(processedBuffer.getNumChannels());
+        auto channelLayout = (numChannels == 1) ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
+        
+        auto options = juce::AudioFormatWriterOptions{}
+                   .withSampleRate (currentSampleRate)
+                   .withChannelLayout (channelLayout)
+                   .withBitsPerSample (bitDepth);
+        auto writer = format->createWriterFor (outputStream, options);
+        
+        if (writer != nullptr)
+        {
+            writer->writeFromAudioSampleBuffer(processedBuffer, 0, numSamples);
+        }
+    }
+}

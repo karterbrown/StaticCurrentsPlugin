@@ -1,0 +1,24 @@
+# Build artifacts
+Builds/**/build/
+Builds/**/intermediate/
+Builds/**/*.ilk
+Builds/**/*.pdb
+*.o
+*.a
+*.so
+*.dylib
+
+# IDEs
+.vscode/
+.idea/
+*.xcworkspace/
+*.xcdatamodeld/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.swp
+*.swo
+*~

@@ -1,0 +1,438 @@
+/*
+  ==============================================================================
+
+    This file contains the basic framework code for a JUCE plugin editor.
+
+  ==============================================================================
+*/
+
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+//==============================================================================
+MyFirstPluginAudioProcessorEditor::MyFirstPluginAudioProcessorEditor (MyFirstPluginAudioProcessor& p)
+    : AudioProcessorEditor (&p), audioProcessor (p)
+{
+    // Setup load button
+    addAndMakeVisible (loadButton);
+    loadButton.onClick = [this]
+    {
+        auto chooser = std::make_shared<juce::FileChooser> ("Select a sample file...",
+                                                             juce::File{},
+                                                             "*.wav;*.aif;*.aiff");
+        auto flags = juce::FileBrowserComponent::openMode
+                   | juce::FileBrowserComponent::canSelectFiles;
+        
+        chooser->launchAsync (flags, [this, chooser] (const juce::FileChooser& fc)
+        {
+            auto file = fc.getResult();
+            if (file.existsAsFile())
+            {
+                audioProcessor.loadSampleFromFile (file);
+                fileLabel.setText (file.getFileName(), juce::dontSendNotification);
+            }
+        });
+    };
+    
+    addAndMakeVisible (fileLabel);
+    fileLabel.setText ("No sample loaded", juce::dontSendNotification);
+    fileLabel.setJustificationType (juce::Justification::centred);
+    
+    // Setup record button
+    addAndMakeVisible (recordButton);
+    recordButton.onClick = [this]
+    {
+        if (audioProcessor.isRecording())
+        {
+            audioProcessor.stopRecording();
+            fileLabel.setText ("Recorded sample loaded", juce::dontSendNotification);
+        }
+        else
+        {
+            audioProcessor.startRecording();
+            fileLabel.setText ("Recording...", juce::dontSendNotification);
+        }
+        updateRecordButton();
+    };
+    
+    // Setup bypass button
+    addAndMakeVisible (bypassButton);
+    bypassButton.onClick = [this]
+    {
+        bool bypassed = !(*audioProcessor.getBypassParameter());
+        *audioProcessor.getBypassParameter() = bypassed;
+        bypassButton.setButtonText (bypassed ? "Bypass (ON)" : "Bypass");
+        bypassButton.setColour (juce::TextButton::buttonColourId, 
+                                bypassed ? juce::Colours::orange : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+    };
+    
+    // Setup play button
+    addAndMakeVisible (playButton);
+    playButton.onClick = [this]
+    {
+        if (isPlaying)
+        {
+            audioProcessor.stopSamplePlayback();
+            playButton.setButtonText ("Play Sample");
+            playButton.setColour (juce::TextButton::buttonColourId, getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+            isPlaying = false;
+        }
+        else
+        {
+            audioProcessor.triggerSamplePlayback();
+            playButton.setButtonText ("Pause");
+            playButton.setColour (juce::TextButton::buttonColourId, juce::Colours::green);
+            isPlaying = true;
+        }
+    };
+    
+    // Setup generate button
+    addAndMakeVisible (generateButton);
+    generateButton.onClick = [this]
+    {
+        juce::PopupMenu formatMenu;
+        formatMenu.addItem (1, "WAV (24-bit)");
+        formatMenu.addItem (2, "WAV (16-bit)");
+        formatMenu.addItem (3, "MP3");
+        formatMenu.addItem (4, "OGG Vorbis");
+        formatMenu.addItem (5, "FLAC");
+        
+        formatMenu.showMenuAsync (juce::PopupMenu::Options(), [this] (int result)
+        {
+            if (result == 0)
+                return;
+            
+            juce::String extension;
+            juce::String formatName;
+            
+            switch (result)
+            {
+                case 1: extension = ".wav"; formatName = "WAV 24-bit"; break;
+                case 2: extension = ".wav"; formatName = "WAV 16-bit"; break;
+                case 3: extension = ".mp3"; formatName = "MP3"; break;
+                case 4: extension = ".ogg"; formatName = "OGG Vorbis"; break;
+                case 5: extension = ".flac"; formatName = "FLAC"; break;
+            }
+            
+            auto chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles;
+            fileChooser = std::make_unique<juce::FileChooser> ("Save Processed Sample As...",
+                                                                juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                                                "*" + extension);
+            
+            fileChooser->launchAsync (chooserFlags, [this, extension, result] (const juce::FileChooser& chooser)
+            {
+                auto file = chooser.getResult();
+                if (file != juce::File{})
+                {
+                    if (!file.hasFileExtension (extension))
+                        file = file.withFileExtension (extension);
+                    
+                    audioProcessor.exportProcessedSample (file);
+                }
+            });
+        });
+    };
+    
+    // Setup progress slider
+    addAndMakeVisible (progressSlider);
+    addAndMakeVisible (progressLabel);
+    progressSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    progressSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    progressSlider.setRange (0.0, 1.0, 0.001);
+    progressSlider.setValue (0.0);
+    progressSlider.onValueChange = [this]
+    {
+        // When user drags the slider, seek to that position
+        if (progressSlider.isMouseButtonDown())
+        {
+            float seekPos = static_cast<float>(progressSlider.getValue());
+            audioProcessor.seekToPosition(seekPos);
+        }
+    };
+    
+    startTimer (50); // Update UI every 50ms for smooth scrubbing
+    
+    // Setup parameter sliders
+    addAndMakeVisible (gainSlider);
+    addAndMakeVisible (gainLabel);
+    gainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    gainSlider.setRange (0.0, 1.0, 0.01);
+    gainSlider.setValue (0.7);
+    gainSlider.onValueChange = [this] { *audioProcessor.getGainParameter() = static_cast<float> (gainSlider.getValue()); };
+    
+    addAndMakeVisible (pitchSlider);
+    addAndMakeVisible (pitchLabel);
+    pitchSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    pitchSlider.setRange (0.5, 2.0, 0.01);
+    pitchSlider.setValue (1.0);
+    pitchSlider.setTextValueSuffix (" x");
+    pitchSlider.onValueChange = [this] { *audioProcessor.getPitchParameter() = static_cast<float> (pitchSlider.getValue()); };
+    
+    // Saturation
+    addAndMakeVisible (saturationSlider);
+    addAndMakeVisible (saturationLabel);
+    saturationSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    saturationSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    saturationSlider.setRange (1.0, 10.0, 0.1);
+    saturationSlider.setValue (1.0);
+    saturationSlider.onValueChange = [this] { *audioProcessor.getSaturationParameter() = static_cast<float> (saturationSlider.getValue()); };
+    
+    // EQ
+    addAndMakeVisible (eqLabel);
+    addAndMakeVisible (lowFreqSlider);
+    addAndMakeVisible (lowGainSlider);
+    lowFreqSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    lowFreqSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    lowFreqSlider.setRange (20.0, 500.0, 1.0);
+    lowFreqSlider.setValue (100.0);
+    lowFreqSlider.setTextValueSuffix (" Hz");
+    lowFreqSlider.onValueChange = [this] { *audioProcessor.getLowFreqParameter() = static_cast<float> (lowFreqSlider.getValue()); };
+    
+    lowGainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    lowGainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    lowGainSlider.setRange (-12.0, 12.0, 0.1);
+    lowGainSlider.setValue (0.0);
+    lowGainSlider.setTextValueSuffix (" dB");
+    lowGainSlider.onValueChange = [this] { *audioProcessor.getLowGainParameter() = static_cast<float> (lowGainSlider.getValue()); };
+    
+    addAndMakeVisible (midFreqSlider);
+    addAndMakeVisible (midGainSlider);
+    midFreqSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    midFreqSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    midFreqSlider.setRange (200.0, 5000.0, 1.0);
+    midFreqSlider.setValue (1000.0);
+    midFreqSlider.setTextValueSuffix (" Hz");
+    midFreqSlider.onValueChange = [this] { *audioProcessor.getMidFreqParameter() = static_cast<float> (midFreqSlider.getValue()); };
+    
+    midGainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    midGainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    midGainSlider.setRange (-12.0, 12.0, 0.1);
+    midGainSlider.setValue (0.0);
+    midGainSlider.setTextValueSuffix (" dB");
+    midGainSlider.onValueChange = [this] { *audioProcessor.getMidGainParameter() = static_cast<float> (midGainSlider.getValue()); };
+    
+    addAndMakeVisible (highFreqSlider);
+    addAndMakeVisible (highGainSlider);
+    highFreqSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    highFreqSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    highFreqSlider.setRange (2000.0, 20000.0, 1.0);
+    highFreqSlider.setValue (8000.0);
+    highFreqSlider.setTextValueSuffix (" Hz");
+    highFreqSlider.onValueChange = [this] { *audioProcessor.getHighFreqParameter() = static_cast<float> (highFreqSlider.getValue()); };
+    
+    highGainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    highGainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    highGainSlider.setRange (-12.0, 12.0, 0.1);
+    highGainSlider.setValue (0.0);
+    highGainSlider.setTextValueSuffix (" dB");
+    highGainSlider.onValueChange = [this] { *audioProcessor.getHighGainParameter() = static_cast<float> (highGainSlider.getValue()); };
+    
+    // Compressor
+    addAndMakeVisible (compLabel);
+    addAndMakeVisible (compThreshSlider);
+    addAndMakeVisible (compRatioSlider);
+    addAndMakeVisible (compAttackSlider);
+    addAndMakeVisible (compReleaseSlider);
+    addAndMakeVisible (compMakeupSlider);
+    
+    compThreshSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compThreshSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compThreshSlider.setRange (-60.0, 0.0, 0.1);
+    compThreshSlider.setValue (-20.0);
+    compThreshSlider.setTextValueSuffix (" dB");
+    compThreshSlider.onValueChange = [this] { *audioProcessor.getCompThreshParameter() = static_cast<float> (compThreshSlider.getValue()); };
+    
+    compRatioSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compRatioSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compRatioSlider.setRange (1.0, 20.0, 0.1);
+    compRatioSlider.setValue (4.0);
+    compRatioSlider.setTextValueSuffix (":1");
+    compRatioSlider.onValueChange = [this] { *audioProcessor.getCompRatioParameter() = static_cast<float> (compRatioSlider.getValue()); };
+    
+    compAttackSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compAttackSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compAttackSlider.setRange (0.001, 0.1, 0.001);
+    compAttackSlider.setValue (0.01);
+    compAttackSlider.setSkewFactorFromMidPoint (0.01);
+    compAttackSlider.setTextValueSuffix (" s");
+    compAttackSlider.onValueChange = [this] { *audioProcessor.getCompAttackParameter() = static_cast<float> (compAttackSlider.getValue()); };
+    
+    compReleaseSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compReleaseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compReleaseSlider.setRange (0.01, 1.0, 0.01);
+    compReleaseSlider.setValue (0.1);
+    compReleaseSlider.setSkewFactorFromMidPoint (0.1);
+    compReleaseSlider.setTextValueSuffix (" s");
+    compReleaseSlider.onValueChange = [this] { *audioProcessor.getCompReleaseParameter() = static_cast<float> (compReleaseSlider.getValue()); };
+    
+    compMakeupSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compMakeupSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compMakeupSlider.setRange (0.0, 24.0, 0.1);
+    compMakeupSlider.setValue (0.0);
+    compMakeupSlider.setTextValueSuffix (" dB");
+    compMakeupSlider.onValueChange = [this] { *audioProcessor.getCompMakeupParameter() = static_cast<float> (compMakeupSlider.getValue()); };
+    
+    setSize (900, 650);
+    setResizable (true, true);
+}
+
+MyFirstPluginAudioProcessorEditor::~MyFirstPluginAudioProcessorEditor()
+{
+    stopTimer();
+}
+
+//==============================================================================
+void MyFirstPluginAudioProcessorEditor::timerCallback()
+{
+    updateRecordButton();
+    
+    // Update progress slider to show sample length and position
+    float length = audioProcessor.getSampleLength();
+    if (length > 0.0f)
+    {
+        progressSlider.setEnabled (true);
+        progressSlider.setRange (0.0, length, 0.01);
+        
+        // Only update position if user is not dragging the slider
+        if (!progressSlider.isMouseButtonDown())
+        {
+            float position = audioProcessor.getPlaybackPosition();
+            progressSlider.setValue (position, juce::dontSendNotification);
+        }
+        
+        // Update text to show current position / total duration
+        float currentPos = static_cast<float>(progressSlider.getValue());
+        int currentMin = static_cast<int>(currentPos) / 60;
+        int currentSec = static_cast<int>(currentPos) % 60;
+        int totalMin = static_cast<int>(length) / 60;
+        int totalSec = static_cast<int>(length) % 60;
+        
+        progressSlider.setTextValueSuffix (juce::String::formatted (" (%d:%02d / %d:%02d)", 
+                                                                     currentMin, currentSec, 
+                                                                     totalMin, totalSec));
+    }
+    else
+    {
+        progressSlider.setEnabled (false);
+        progressSlider.setValue (0.0, juce::dontSendNotification);
+        progressSlider.setTextValueSuffix ("");
+    }
+}
+
+//==============================================================================
+void MyFirstPluginAudioProcessorEditor::paint (juce::Graphics& g)
+{
+    g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
+
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (15.0f));
+    g.drawFittedText ("Voice Sampler & Processor", getLocalBounds(), juce::Justification::centred, 1);
+}
+
+void MyFirstPluginAudioProcessorEditor::resized()
+{
+    auto bounds = getLocalBounds().reduced (10);
+    
+    // Buttons row
+    auto buttonRow = bounds.removeFromTop (60);
+    auto btnWidth = buttonRow.getWidth() / 5;
+    loadButton.setBounds (buttonRow.removeFromLeft (btnWidth).reduced (5));
+    recordButton.setBounds (buttonRow.removeFromLeft (btnWidth).reduced (5));
+    bypassButton.setBounds (buttonRow.removeFromLeft (btnWidth).reduced (5));
+    playButton.setBounds (buttonRow.removeFromLeft (btnWidth).reduced (5));
+    generateButton.setBounds (buttonRow.reduced (5));
+    
+    fileLabel.setBounds (bounds.removeFromTop (40).reduced (5));
+    
+    // Progress/scrubber bar
+    auto progressRow = bounds.removeFromTop (50);
+    progressLabel.setBounds (progressRow.removeFromLeft (80).reduced (5));
+    progressSlider.setBounds (progressRow.reduced (5));
+    
+    bounds.removeFromTop (10);
+    
+    // Basic parameters section
+    auto paramRow = bounds.removeFromTop (120);
+    auto knobWidth = 110;
+    auto paramLeft = paramRow.removeFromLeft (knobWidth);
+    gainLabel.setBounds (paramLeft.removeFromTop (20));
+    gainSlider.setBounds (paramLeft.reduced (5));
+    
+    paramLeft = paramRow.removeFromLeft (knobWidth);
+    pitchLabel.setBounds (paramLeft.removeFromTop (20));
+    pitchSlider.setBounds (paramLeft.reduced (5));
+    
+    bounds.removeFromTop (10);
+    
+    // Saturation
+    saturationLabel.setBounds (bounds.removeFromTop (20));
+    auto satRow = bounds.removeFromTop (120);
+    auto satLeft = satRow.removeFromLeft (knobWidth);
+    saturationSlider.setBounds (satLeft.reduced (5));
+    
+    bounds.removeFromTop (10);
+    
+    // EQ section
+    eqLabel.setBounds (bounds.removeFromTop (20));
+    auto eqRow = bounds.removeFromTop (120);
+    auto eqLeft = eqRow.removeFromLeft (knobWidth);
+    lowFreqSlider.setBounds (eqLeft.reduced (5));
+    
+    eqLeft = eqRow.removeFromLeft (knobWidth);
+    lowGainSlider.setBounds (eqLeft.reduced (5));
+    
+    eqLeft = eqRow.removeFromLeft (knobWidth);
+    midFreqSlider.setBounds (eqLeft.reduced (5));
+    
+    eqLeft = eqRow.removeFromLeft (knobWidth);
+    midGainSlider.setBounds (eqLeft.reduced (5));
+    
+    eqLeft = eqRow.removeFromLeft (knobWidth);
+    highFreqSlider.setBounds (eqLeft.reduced (5));
+    
+    eqLeft = eqRow.removeFromLeft (knobWidth);
+    highGainSlider.setBounds (eqLeft.reduced (5));
+    
+    bounds.removeFromTop (10);
+    
+    // Compressor section
+    compLabel.setBounds (bounds.removeFromTop (20));
+    auto compRow = bounds.removeFromTop (120);
+    auto compLeft = compRow.removeFromLeft (knobWidth);
+    compThreshSlider.setBounds (compLeft.reduced (5));
+    
+    compLeft = compRow.removeFromLeft (knobWidth);
+    compRatioSlider.setBounds (compLeft.reduced (5));
+    
+    compLeft = compRow.removeFromLeft (knobWidth);
+    compAttackSlider.setBounds (compLeft.reduced (5));
+    
+    compLeft = compRow.removeFromLeft (knobWidth);
+    compReleaseSlider.setBounds (compLeft.reduced (5));
+    
+    compLeft = compRow.removeFromLeft (knobWidth);
+    compMakeupSlider.setBounds (compLeft.reduced (5));
+}
+
+void MyFirstPluginAudioProcessorEditor::updateRecordButton()
+{
+    if (audioProcessor.isRecording())
+    {
+        recordButton.setButtonText ("Stop Recording");
+        recordButton.setColour (juce::TextButton::buttonColourId, juce::Colours::red);
+        fileLabel.setText ("RECORDING...", juce::dontSendNotification);
+    }
+    else
+    {
+        recordButton.setButtonText ("Record");
+        recordButton.setColour (juce::TextButton::buttonColourId, getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+        
+        if (fileLabel.getText() == "RECORDING...")
+            fileLabel.setText ("Recording complete - sample loaded", juce::dontSendNotification);
+    }
+}
+
+// Note: For AU builds in Logic Pro, audio/MIDI settings are controlled by Logic
+// For Standalone builds, add audio settings dialog here if needed
