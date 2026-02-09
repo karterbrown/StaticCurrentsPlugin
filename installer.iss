@@ -1,16 +1,16 @@
 [Setup]
 AppName=Static Currents Plugin
-AppVersion=1.0.0
+AppVersion=1.0.1
 DefaultDirName={autopf}\Static Currents Plugin
 DefaultGroupName=Static Currents Plugin
 OutputDir=SetupPackage
-OutputBaseFilename=StaticCurrentsPluginSetup_v1.0.0
+OutputBaseFilename=StaticCurrentsPluginSetup_v1.0.1
 Compression=lzma2/max
 SolidCompression=yes
 UninstallDisplayIcon={app}\StaticCurrentsPlugin.exe
 AppPublisher=Karter Brown
 AppCopyright=Copyright (C) 2026 Karter Brown
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.0.1.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
