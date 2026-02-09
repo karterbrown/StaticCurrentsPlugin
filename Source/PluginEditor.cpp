@@ -386,6 +386,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     // Basic parameters
     addClickReset(gainSlider, 0.7);
     addClickReset(pitchSlider, 1.0);
+    addClickReset(globalOutputSlider, 0.0);
 
     // Compressor
     addClickReset(compThreshSlider, 0.0);
@@ -875,6 +876,7 @@ void StaticCurrentsPluginAudioProcessorEditor::syncSlidersFromParameters()
 
     setSlider (gainSlider, audioProcessor.getGainParameter()->load());
     setSlider (pitchSlider, audioProcessor.getPitchParameter()->load());
+    setSlider (globalOutputSlider, audioProcessor.getGlobalOutputParameter()->load());
 
     setSlider (compThreshSlider, audioProcessor.getCompThreshParameter()->load());
     setSlider (compRatioSlider, audioProcessor.getCompRatioParameter()->load());

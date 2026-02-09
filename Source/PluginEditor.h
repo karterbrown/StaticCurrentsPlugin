@@ -85,8 +85,8 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
     
     // Basic parameters
-    juce::Slider gainSlider, pitchSlider;
-    juce::Label gainLabel { {}, "Gain" }, pitchLabel { {}, "Pitch" };
+    juce::Slider gainSlider, pitchSlider, globalOutputSlider;
+    juce::Label gainLabel { {}, "Gain" }, pitchLabel { {}, "Pitch" }, globalOutputLabel { {}, "Output" };
     juce::ComboBox profileBox;
       bool profileInitialized = false;
     juce::Label profileLabel { {}, "Profile" };

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "TubeSaturation.h"
 
 //==============================================================================
 /**
@@ -137,6 +138,10 @@ public:
     std::atomic<float>* getCompAttackParameter() { return &compAttack; }
     std::atomic<float>* getCompReleaseParameter() { return &compRelease; }
     std::atomic<float>* getCompMakeupParameter() { return &compMakeup; }
+    
+    // Global Output accessor
+    std::atomic<float>* getGlobalOutputParameter() { return &globalOutput; }
+    
     std::atomic<bool>* getBypassParameter() { return &bypass; }    
     // Preset application
     void applyProfilePreset(int profileID);
@@ -219,6 +224,9 @@ private:
     std::atomic<float> compRelease { 0.1f };    // 0.01 to 1.0 s
     std::atomic<float> compMakeup { 0.0f };     // 0 to 24 dB
     
+    // Global Output
+    std::atomic<float> globalOutput { 0.0f };   // -24 to +6 dB, default 0 dB
+    
     std::atomic<bool> bypass { false };
     
     // Playback tracking
@@ -249,6 +257,9 @@ private:
     // FET-style compressor state
     float compEnvelope = 0.0f;
     float compKneeWidth = 6.0f;  // Soft knee width in dB for FET character
+    
+    // Tube saturation processor
+    std::unique_ptr<TubeSaturation> tubeSaturation;
     
     double currentSampleRate = 44100.0;
     double tapeWowPhase = 0.0;

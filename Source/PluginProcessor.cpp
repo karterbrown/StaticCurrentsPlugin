@@ -128,6 +128,13 @@ void StaticCurrentsPluginAudioProcessor::prepareToPlay (double sampleRate, int s
     peak1R.reset();
     peak2L.reset();
     peak2R.reset();
+    
+    // Initialize tube saturation processor
+    if (!tubeSaturation)
+        tubeSaturation = std::make_unique<TubeSaturation>();
+    
+    tubeSaturation->prepare(sampleRate, samplesPerBlock, 2);
+    tubeSaturation->reset();
     peak3L.reset();
     peak3R.reset();
     peak4L.reset();
@@ -801,6 +808,10 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
             float coeff = (gainReduction > compEnvelope) ? attackCoeff : releaseCoeff;
             compEnvelope += (gainReduction - compEnvelope) * coeff;
             
+            // Denormal protection for envelope
+            if (std::abs(compEnvelope) < 1e-15f)
+                compEnvelope = 0.0f;
+            
             // Apply compression with makeup gain and FET-style slight odd harmonics
             float compGain = juce::Decibels::decibelsToGain (-compEnvelope + makeup);
             
@@ -815,6 +826,10 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
                     sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.1f;
                 }
                 
+                // NaN/Inf protection for compressor output
+                if (std::isnan(sample) || std::isinf(sample))
+                    sample = buffer.getSample(ch, i);  // Fall back to unprocessed
+                
                 buffer.setSample (ch, i, sample);
             }
         }
@@ -823,8 +838,37 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
         float satMix = juce::jlimit (0.0f, 1.0f, saturation.load());
         int satType = static_cast<int>(saturationType.load());
         int profile = static_cast<int>(profileType.load());
-
-        float driveBoost = 1.0f;
+        
+        // Mode 1: Tube Saturation (dedicated processor with oversampling)
+        if (satType == 1 && tubeSaturation != nullptr)
+        {
+            // Update parameters from atomics
+            float drive = tubeDrive.load();
+            float warmth = tubeWarmth.load();
+            float bias = tubeBias.load();
+            float output = tubeOutput.load();
+            
+            // Map warmth 0-1 to dB range -12 to +6
+            float warmthDb = (warmth * 18.0f) - 12.0f;
+            
+            // Bias is already in the correct range -1 to +1
+            float biasAmount = bias;
+            
+            // Map output 0-2 to dB range -12 to +12
+            float outputDb = (output - 1.0f) * 12.0f;
+            
+            tubeSaturation->setDrive(drive);
+            tubeSaturation->setWarmth(warmthDb);
+            tubeSaturation->setBias(biasAmount);
+            tubeSaturation->setOutputGain(outputDb);
+            
+            // Process buffer with oversampled tube saturation
+            tubeSaturation->process(buffer);
+        }
+        else
+        {
+            // Fallback saturation for non-Tube modes (legacy implementation)
+            float driveBoost = 1.0f;
         float brightness = 1.0f;
         float outputTrim = 1.0f;
         float crushBoost = 1.0f;
@@ -1081,12 +1125,44 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
                 }
             }
         }
+        } // end else (non-Tube saturation modes)
+        
+        // 5. Final Global Output Trim + Safety Limiter (applied to all modes)
+        float globalOutDb = globalOutput.load();
+        float globalGain = juce::Decibels::decibelsToGain(globalOutDb);
+        
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            float* data = buffer.getWritePointer(ch);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float sample = data[i] * globalGain;
+                
+                // NaN/Inf protection
+                if (std::isnan(sample) || std::isinf(sample))
+                    sample = 0.0f;
+                
+                // Denormal protection
+                if (std::abs(sample) < 1e-15f)
+                    sample = 0.0f;
+                
+                // Soft clipper/limiter (prevents runaway peaks)
+                if (sample > 1.0f)
+                    sample = 1.0f + std::tanh((sample - 1.0f) * 0.5f) * 0.1f;
+                else if (sample < -1.0f)
+                    sample = -1.0f + std::tanh((sample + 1.0f) * 0.5f) * 0.1f;
+                
+                data[i] = sample;
+            }
+        }
     }
     else
     {
-        // When bypassed, still apply gain
+        // When bypassed, still apply gain and global output
         float currentGain = gain.load();
-        buffer.applyGain (currentGain);
+        float globalOutDb = globalOutput.load();
+        float globalGain = juce::Decibels::decibelsToGain(globalOutDb);
+        buffer.applyGain (currentGain * globalGain);
     }
 }
 
