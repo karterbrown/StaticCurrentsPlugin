@@ -61,8 +61,12 @@ public:
     void startRecording();
     void stopRecording();
     bool isRecording() const { return recording; }
+    bool hasLoadedSample() const { return sampler.getNumSounds() > 0; }
     void triggerSamplePlayback() { shouldTriggerNote.store(true); }
     void stopSamplePlayback() { shouldStopNote.store(true); }
+    void setLoopPlayback(bool shouldLoop) { loopPlayback.store(shouldLoop); }
+    bool isLoopPlaybackEnabled() const { return loopPlayback.load(); }
+    bool isCurrentlyPlaying() const { return isNoteCurrentlyPlaying; }
     void seekToPosition(float positionInSeconds) { seekPosition.store(positionInSeconds); }
     void exportProcessedSample(const juce::File& outputFile);
     
@@ -137,6 +141,9 @@ public:
     // Preset application
     void applyProfilePreset(int profileID);
 private:
+  void clearLoadedSample();
+  juce::File createRecordingTempFile() const;
+
     //==============================================================================
     juce::Synthesiser sampler;
     juce::AudioFormatManager formatManager;
@@ -146,6 +153,8 @@ private:
     juce::AudioBuffer<float> recordBuffer;
     int recordPosition = 0;
     double recordSampleRate = 44100.0;
+    juce::File lastRecordingFile;
+    bool clearedOnStart = false;
     
     // Parameters
     std::atomic<float> gain { 0.7f };       // 0.0 to 1.0
@@ -215,6 +224,7 @@ private:
     // Playback tracking
     std::atomic<bool> shouldTriggerNote { false };
     std::atomic<bool> shouldStopNote { false };
+    std::atomic<bool> loopPlayback { false };
     std::atomic<float> playbackPosition { 0.0f };
     std::atomic<float> sampleLength { 0.0f };
     std::atomic<float> seekPosition { -1.0f };

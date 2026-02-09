@@ -26,6 +26,11 @@ StaticCurrentsPluginAudioProcessor::StaticCurrentsPluginAudioProcessor()
     // Add sampler voices for polyphony (8 voices)
     for (int i = 0; i < 8; ++i)
         sampler.addVoice (new juce::SamplerVoice());
+
+    lastRecordingFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                             .getChildFile ("StaticCurrentsPlugin_recording.wav");
+    lastRecordingFile.deleteFile();
+    clearLoadedSample();
 }
 
 StaticCurrentsPluginAudioProcessor::~StaticCurrentsPluginAudioProcessor()
@@ -101,6 +106,13 @@ void StaticCurrentsPluginAudioProcessor::prepareToPlay (double sampleRate, int s
     // initialisation that you need..
     currentSampleRate = sampleRate;
     sampler.setCurrentPlaybackSampleRate (sampleRate);
+
+    if (!clearedOnStart)
+    {
+        clearLoadedSample();
+        lastRecordingFile.deleteFile();
+        clearedOnStart = true;
+    }
     
     // Reset all filter stages for HPF/LPF
     for (int i = 0; i < 8; ++i)
@@ -458,8 +470,10 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
     // Trigger sample playback if requested
-    if (shouldTriggerNote.exchange(false))
+    if (shouldTriggerNote.exchange(false) && sampler.getNumSounds() > 0)
     {
+        DBG("TRIGGERING NEW NOTE - Play button pressed");
+        
         // Calculate MIDI note based on pitch parameter
         // pitch: 0.5 = -12 semitones, 1.0 = 0 semitones, 2.0 = +12 semitones
         float pitchValue = pitch.load();
@@ -477,6 +491,7 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
     // Stop sample playback if requested
     if (shouldStopNote.exchange(false))
     {
+        DBG("STOP requested - stopping all playback");
         sampler.allNotesOff(1, true);
         if (lastNoteTriggered >= 0)
         {
@@ -485,6 +500,9 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
         }
         isNoteCurrentlyPlaying = false;
         samplesSinceNoteOn = 0;
+        
+        // Prevent any pending trigger
+        shouldTriggerNote.store(false);
     }
 
     // Recording incoming audio - copy input before clearing
@@ -538,70 +556,58 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
             buffer.clear (i, 0, buffer.getNumSamples());
     }
 
-    // Handle seek position
-    float seekPos = seekPosition.exchange(-1.0f);
-    if (seekPos >= 0.0f && sampler.getNumSounds() > 0)
-    {
-        // Stop current playback
-        sampler.allNotesOff(1, true);
-        
-        // Trigger new note at seek position
-        // Note: JUCE sampler doesn't support direct seeking, so we restart playback
-        float pitchValue = pitch.load();
-        float semitones = 12.0f * std::log2(pitchValue);
-        int midiNote = 60 + static_cast<int>(std::round(semitones));
-        midiNote = juce::jlimit(0, 127, midiNote);
-        
-        lastNoteTriggered = midiNote;
-        lastPitchValue = pitchValue;
-        samplesSinceNoteOn = 0;
-        isNoteCurrentlyPlaying = true;
-        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
-    }
+    // Seek functionality disabled to prevent unintended looping
+    seekPosition.store(-1.0f);
 
-    // Handle real-time pitch changes during playback
-    float currentPitchValue = pitch.load();
-    if (isNoteCurrentlyPlaying && std::abs(currentPitchValue - lastPitchValue) > 0.01f)
-    {
-        // Pitch has changed - retrigger note at new pitch
-        if (lastNoteTriggered >= 0)
-        {
-            sampler.allNotesOff(1, true);
-            midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
-        }
-        
-        float semitones = 12.0f * std::log2(currentPitchValue);
-        int midiNote = 60 + static_cast<int>(std::round(semitones));
-        midiNote = juce::jlimit(0, 127, midiNote);
-        
-        lastNoteTriggered = midiNote;
-        lastPitchValue = currentPitchValue;
-        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
-        // Keep samplesSinceNoteOn to maintain position
-    }
-    
-    // Render sampler output with current parameters
-    sampler.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
-    
-    // Track playback position
+    // CRITICAL: Stop playback BEFORE rendering if we're near the end to prevent looping
     if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
     {
-        samplesSinceNoteOn += buffer.getNumSamples();
-        float totalLength = sampleLength.load();
-        if (totalLength > 0.0f && currentSampleRate > 0.0)
+        float baseSampleLength = sampleLength.load();
+        
+        if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
         {
-            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
-            playbackPosition.store(currentPos);
+            // Account for pitch: pitch changes the playback rate
+            float currentPitchValue = lastPitchValue;
+            float actualDuration = baseSampleLength / currentPitchValue;
             
-            // Auto-stop when sample ends
-            if (currentPos >= totalLength)
+            // Check current position BEFORE rendering this buffer
+            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
+            
+            // Stop WELL BEFORE the end (200ms buffer) to absolutely prevent any looping
+            if (currentPos >= (actualDuration - 0.2f))
             {
+                DBG("Stopping playback near end. Position: " + juce::String(currentPos, 3) + 
+                    ", Duration: " + juce::String(actualDuration, 3));
+                
+                // Force stop immediately and prevent any retriggering
                 isNoteCurrentlyPlaying = false;
                 sampler.allNotesOff(1, true);
                 midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
                 lastNoteTriggered = -1;
                 samplesSinceNoteOn = 0;
+                playbackPosition.store(0.0f);
+                
+                // CRITICAL: Clear any pending trigger to prevent loop restart
+                shouldTriggerNote.store(false);
             }
+        }
+    }
+    
+    // Render sampler output
+    sampler.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
+    
+    // Update playback position after rendering
+    if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
+    {
+        samplesSinceNoteOn += buffer.getNumSamples();
+        float baseSampleLength = sampleLength.load();
+        
+        if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
+        {
+            float currentPitchValue = lastPitchValue;
+            float actualDuration = baseSampleLength / currentPitchValue;
+            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
+            playbackPosition.store(currentPos);
         }
     }
     else if (lastNoteTriggered < 0)
@@ -1113,6 +1119,11 @@ void StaticCurrentsPluginAudioProcessor::startRecording()
 {
     if (!recording)
     {
+        shouldStopNote.store(true);
+        shouldTriggerNote.store(false);
+        loopPlayback.store(false);
+        clearLoadedSample();
+        lastRecordingFile.deleteFile();
         recording = true;
         recordingActive.store(true);
         recordPosition = 0;
@@ -1125,54 +1136,128 @@ void StaticCurrentsPluginAudioProcessor::startRecording()
     }
 }
 
+void StaticCurrentsPluginAudioProcessor::clearLoadedSample()
+{
+    sampler.allNotesOff(1, true);
+    sampler.clearSounds();
+    sampleLength.store(0.0f);
+    playbackPosition.store(0.0f);
+    seekPosition.store(-1.0f);
+    lastNoteTriggered = -1;
+    currentlyPlayingVoiceIndex = -1;
+    samplesSinceNoteOn = 0;
+    isNoteCurrentlyPlaying = false;
+}
+
 void StaticCurrentsPluginAudioProcessor::stopRecording()
 {
-    if (recording && recordPosition > 0)
+    if (!recording)
+        return;
+
+    recording = false;
+    recordingActive.store(false);
+
+    DBG("stopRecording called. recordPosition: " + juce::String(recordPosition));
+
+    if (recordPosition > 0)
     {
-        recording = false;
-        recordingActive.store(false);
-        
+        if (recordSampleRate <= 0.0)
+        {
+            DBG("ERROR: recordSampleRate is invalid: " + juce::String(recordSampleRate));
+            clearLoadedSample();
+            recordPosition = 0;
+            return;
+        }
+
         // Trim the buffer to actual recorded length
         juce::AudioBuffer<float> trimmedBuffer (recordBuffer.getNumChannels(), recordPosition);
         for (int ch = 0; ch < recordBuffer.getNumChannels(); ++ch)
             trimmedBuffer.copyFrom (ch, 0, recordBuffer, ch, 0, recordPosition);
         
+        // Calculate peak level to verify we have audio data
+        float peakLevel = 0.0f;
+        for (int ch = 0; ch < trimmedBuffer.getNumChannels(); ++ch)
+        {
+            auto* data = trimmedBuffer.getReadPointer(ch);
+            for (int i = 0; i < trimmedBuffer.getNumSamples(); ++i)
+                peakLevel = juce::jmax(peakLevel, std::abs(data[i]));
+        }
+        DBG("Trimmed buffer - Channels: " + juce::String(trimmedBuffer.getNumChannels()) +
+            ", Samples: " + juce::String(trimmedBuffer.getNumSamples()) +
+            ", Peak Level: " + juce::String(peakLevel, 4));
+        
         // Create a temporary file to save the recording
-        auto tempFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                            .getChildFile ("recorded_sample.wav");
+        lastRecordingFile = createRecordingTempFile();
+        DBG("Saving to: " + lastRecordingFile.getFullPathName());
         
         juce::WavAudioFormat wavFormat;
-        std::unique_ptr<juce::OutputStream> outStream (tempFile.createOutputStream());
+        std::unique_ptr<juce::FileOutputStream> outStream (lastRecordingFile.createOutputStream());
         
         if (outStream != nullptr)
         {
             auto numChannels = static_cast<unsigned int>(trimmedBuffer.getNumChannels());
-            auto channelLayout = (numChannels == 1) ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
-            
-            auto options = juce::AudioFormatWriterOptions{}
-                               .withSampleRate (recordSampleRate)
-                               .withChannelLayout (channelLayout)
-                               .withBitsPerSample (24);
-            auto writer = wavFormat.createWriterFor (outStream, options);
-            
+            juce::StringPairArray metadata;
+            std::unique_ptr<juce::AudioFormatWriter> writer (
+                wavFormat.createWriterFor (outStream.get(), recordSampleRate, numChannels, 24, metadata, 0));
+
             if (writer != nullptr)
             {
+                outStream.release();
                 writer->writeFromAudioSampleBuffer (trimmedBuffer, 0, trimmedBuffer.getNumSamples());
-
-                
-                // Load the recorded sample into the sampler
-                loadSampleFromFile (tempFile);
+                writer->flush(); // Ensure data is written to disk
+                DBG("WAV file written successfully");
             }
+            else
+            {
+                DBG("ERROR: Failed to create WAV writer!");
+            }
+            
+            // Explicitly destroy the writer to close the file
+            writer.reset();
+        }
+        else
+        {
+            DBG("ERROR: Failed to create output stream!");
+        }
+
+        // Small delay to ensure file is fully written and closed
+        juce::Thread::sleep(10);
+
+        if (lastRecordingFile.existsAsFile() && lastRecordingFile.getSize() > 0)
+        {
+            DBG("WAV file created successfully, size: " + juce::String(lastRecordingFile.getSize()) + " bytes");
+            loadSampleFromFile (lastRecordingFile);
+        }
+        else
+        {
+            DBG("ERROR: WAV file does not exist or is empty!");
+            clearLoadedSample();
         }
     }
+    else
+    {
+        DBG("No audio recorded (recordPosition = 0)");
+        clearLoadedSample();
+    }
+
+    recordPosition = 0;
 }
 
 void StaticCurrentsPluginAudioProcessor::loadSampleFromFile (const juce::File& file)
 {
+    DBG("loadSampleFromFile called: " + file.getFullPathName());
+    DBG("File exists: " + juce::String(file.existsAsFile()) + ", Size: " + juce::String(file.getSize()));
+    
+    clearLoadedSample();
     auto* reader = formatManager.createReaderFor (file);
     
     if (reader != nullptr)
     {
+        DBG("Reader created successfully!");
+        DBG("Sample rate: " + juce::String(reader->sampleRate) + 
+            ", Length: " + juce::String(reader->lengthInSamples) + 
+            ", Channels: " + juce::String(reader->numChannels));
+        
         // Create SamplerSound with stereo buffer
         // Maps to all MIDI notes (0-127) with max velocity range
         juce::BigInteger allNotes;
@@ -1187,9 +1272,28 @@ void StaticCurrentsPluginAudioProcessor::loadSampleFromFile (const juce::File& f
                                                    0.0,  // no release envelope (play full sample)
                                                    60.0  // max sample length in seconds
                                                    ));
+
+        if (reader->sampleRate > 0.0)
+        {
+            float length = static_cast<float>(reader->lengthInSamples) / static_cast<float>(reader->sampleRate);
+            sampleLength.store(length);
+            DBG("Sample loaded! Length: " + juce::String(length, 3) + " seconds");
+            DBG("Sampler now has " + juce::String(sampler.getNumSounds()) + " sounds loaded");
+        }
         
         delete reader;
     }
+    else
+    {
+        DBG("ERROR: Failed to create reader for file!");
+    }
+}
+
+juce::File StaticCurrentsPluginAudioProcessor::createRecordingTempFile() const
+{
+    auto tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory);
+    auto timestamp = juce::String (juce::Time::getCurrentTime().toMilliseconds());
+    return tempDir.getChildFile ("StaticCurrentsPlugin_recording_" + timestamp + ".wav");
 }
 
 //==============================================================================

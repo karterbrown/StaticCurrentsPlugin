@@ -76,7 +76,7 @@ private:
     juce::Label fileLabel;
     
     juce::Slider progressSlider;
-    juce::Label progressLabel { {}, "Position" };
+    juce::Label progressLabel { {}, "0:00" };
     juce::Image logoImage;
     juce::Rectangle<int> logoImageBounds;
     

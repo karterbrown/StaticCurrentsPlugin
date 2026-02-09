@@ -59,10 +59,18 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         if (audioProcessor.isRecording())
         {
             audioProcessor.stopRecording();
-            fileLabel.setText ("Recorded sample loaded", juce::dontSendNotification);
+            if (audioProcessor.hasLoadedSample())
+                fileLabel.setText ("Recorded sample loaded", juce::dontSendNotification);
+            else
+                fileLabel.setText ("No sample recorded", juce::dontSendNotification);
         }
         else
         {
+            audioProcessor.stopSamplePlayback();
+            isPlaying = false;
+            playButton.setButtonText ("Play Sample");
+            playButton.setColour (juce::TextButton::buttonColourId,
+                                  getLookAndFeel().findColour (juce::TextButton::buttonColourId));
             audioProcessor.startRecording();
             fileLabel.setText ("Recording...", juce::dontSendNotification);
         }
@@ -96,7 +104,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         else
         {
             audioProcessor.triggerSamplePlayback();
-            playButton.setButtonText ("Pause");
+            playButton.setButtonText ("Stop");
             playButton.setColour (juce::TextButton::buttonColourId, juce::Colours::green);
             isPlaying = true;
         }
@@ -151,32 +159,23 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     addAndMakeVisible (progressSlider);
     addAndMakeVisible (progressLabel);
     progressSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    progressSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
+    progressSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     progressSlider.setRange (0.0, 1.0, 0.001);
+    progressLabel.setJustificationType (juce::Justification::centred);
     progressSlider.setValue (0.0);
     progressSlider.onDragStart = [this]
     {
         if (isPlaying)
             audioProcessor.stopSamplePlayback();
     };
-    progressSlider.onValueChange = [this]
-    {
-        if (progressSlider.isMouseButtonDown())
-        {
-            float seekPos = static_cast<float> (progressSlider.getValue());
-            audioProcessor.seekToPosition (seekPos);
-        }
-    };
-    progressSlider.onDragEnd = [this]
-    {
-        if (isPlaying)
-            audioProcessor.triggerSamplePlayback();
-    };
+    // Disable all progress slider interactions to prevent unintended playback
+    progressSlider.onValueChange = nullptr;
+    progressSlider.onDragEnd = nullptr;
 
     // Basic parameters
     addAndMakeVisible (gainSlider);
     addAndMakeVisible (gainLabel);
-    gainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    gainSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     gainSlider.setRange (0.0, 1.0, 0.01);
     gainSlider.setValue (0.7);
@@ -184,7 +183,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
     addAndMakeVisible (pitchSlider);
     addAndMakeVisible (pitchLabel);
-    pitchSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    pitchSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     pitchSlider.setRange (0.5, 2.0, 0.01);
     pitchSlider.setValue (1.0);
@@ -272,7 +271,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     {
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
-        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        slider.setSliderStyle (juce::Slider::LinearBarVertical);
         slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 18);
         slider.setRange (min, max, step);
         slider.setValue (value);
@@ -339,21 +338,21 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     addAndMakeVisible (compReleaseSlider);
     addAndMakeVisible (compMakeupSlider);
 
-    compThreshSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compThreshSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     compThreshSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compThreshSlider.setRange (-60.0, 0.0, 0.1);
     compThreshSlider.setValue (-20.0);
     compThreshSlider.setTextValueSuffix (" dB");
     compThreshSlider.onValueChange = [this] { *audioProcessor.getCompThreshParameter() = static_cast<float> (compThreshSlider.getValue()); };
 
-    compRatioSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compRatioSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     compRatioSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compRatioSlider.setRange (1.0, 20.0, 0.1);
     compRatioSlider.setValue (4.0);
     compRatioSlider.setTextValueSuffix (":1");
     compRatioSlider.onValueChange = [this] { *audioProcessor.getCompRatioParameter() = static_cast<float> (compRatioSlider.getValue()); };
 
-    compAttackSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compAttackSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     compAttackSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compAttackSlider.setRange (0.001, 0.1, 0.001);
     compAttackSlider.setValue (0.01);
@@ -361,7 +360,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     compAttackSlider.setTextValueSuffix (" s");
     compAttackSlider.onValueChange = [this] { *audioProcessor.getCompAttackParameter() = static_cast<float> (compAttackSlider.getValue()); };
 
-    compReleaseSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compReleaseSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     compReleaseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compReleaseSlider.setRange (0.01, 1.0, 0.01);
     compReleaseSlider.setValue (0.1);
@@ -369,7 +368,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     compReleaseSlider.setTextValueSuffix (" s");
     compReleaseSlider.onValueChange = [this] { *audioProcessor.getCompReleaseParameter() = static_cast<float> (compReleaseSlider.getValue()); };
 
-    compMakeupSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    compMakeupSlider.setSliderStyle (juce::Slider::LinearBarVertical);
     compMakeupSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compMakeupSlider.setRange (0.0, 24.0, 0.1);
     compMakeupSlider.setValue (0.0);
@@ -433,12 +432,23 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
     startTimer (50);
 
-    setSize (1200, 900);
+    // Get the primary display's user area (excludes taskbar)
+    auto displays = juce::Desktop::getInstance().getDisplays();
+    auto primaryDisplay = displays.getPrimaryDisplay();
+    if (primaryDisplay != nullptr)
+    {
+        auto screenArea = primaryDisplay->userArea;
+        setBounds (screenArea);
+    }
+    else
+    {
+        // Fallback if display detection fails
+        setSize (1920, 1080);
+    }
+    
     setResizable (true, true);
-    // Minimum size calculated based on:
-    // Height: 12px border + 180px top area + 412px content (140+8+140+8+116 for image min) + 12px border = 616px
-    // Width: Minimum for 3 columns with readable controls
-    setResizeLimits (900, 616, 2400, 1800);
+    // Minimum size to prevent overlapping
+    setResizeLimits (950, 700, 4800, 3600);
 }
 
 StaticCurrentsPluginAudioProcessorEditor::~StaticCurrentsPluginAudioProcessorEditor()
@@ -457,6 +467,7 @@ void StaticCurrentsPluginAudioProcessorEditor::timerCallback()
     float length = audioProcessor.getSampleLength();
     if (length > 0.0f)
     {
+        playButton.setEnabled (true);
         progressSlider.setEnabled (true);
         progressSlider.setRange (0.0, length, 0.01);
 
@@ -466,7 +477,7 @@ void StaticCurrentsPluginAudioProcessorEditor::timerCallback()
             progressSlider.setValue (position, juce::dontSendNotification);
             
             // Check if playback has finished
-            if (isPlaying && position >= length - 0.1f)
+            if (isPlaying && !audioProcessor.isCurrentlyPlaying())
             {
                 isPlaying = false;
                 playButton.setButtonText ("Play Sample");
@@ -478,18 +489,21 @@ void StaticCurrentsPluginAudioProcessorEditor::timerCallback()
         float currentPos = static_cast<float> (progressSlider.getValue());
         int currentMin = static_cast<int> (currentPos) / 60;
         int currentSec = static_cast<int> (currentPos) % 60;
-        int totalMin = static_cast<int> (length) / 60;
-        int totalSec = static_cast<int> (length) % 60;
 
-        progressSlider.setTextValueSuffix (juce::String::formatted (" (%d:%02d / %d:%02d)",
-                                                                    currentMin, currentSec,
-                                                                    totalMin, totalSec));
+        progressLabel.setText (juce::String::formatted ("%d:%02d",
+                                                        currentMin, currentSec),
+                              juce::dontSendNotification);
     }
     else
     {
         progressSlider.setEnabled (false);
         progressSlider.setValue (0.0, juce::dontSendNotification);
-        progressSlider.setTextValueSuffix ("");
+        progressLabel.setText ("0:00", juce::dontSendNotification);
+        playButton.setEnabled (false);
+        isPlaying = false;
+        playButton.setButtonText ("Play Sample");
+        playButton.setColour (juce::TextButton::buttonColourId,
+                              getLookAndFeel().findColour (juce::TextButton::buttonColourId));
     }
 }
 
@@ -609,8 +623,14 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     fileLabel.setBounds (topArea.removeFromTop (fileLabelHeight).reduced (10, 0));
 
     auto progressRow = topArea.removeFromTop (progressRowHeight).reduced (60, 0);
-    progressLabel.setBounds (progressRow.removeFromLeft (90).reduced (4));
-    progressSlider.setBounds (progressRow.reduced (4));
+    const int progressLabelWidth = 90;
+    const int progressSliderWidth = progressRow.getWidth() - progressLabelWidth - 8;
+    const int progressTotalWidth = progressLabelWidth + 8 + progressSliderWidth;
+    auto progressStrip = progressRow.withWidth (progressTotalWidth)
+                                    .withX (progressRow.getX() + (progressRow.getWidth() - progressTotalWidth) / 2);
+    progressLabel.setBounds (progressStrip.removeFromLeft (progressLabelWidth).reduced (4));
+    progressStrip.removeFromLeft (8);
+    progressSlider.setBounds (progressStrip.reduced (4));
 
     auto profileRow = topArea.removeFromTop (profileRowHeight).reduced (60, 0);
     const int profileLabelWidth = 90;
@@ -635,8 +655,9 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     const int colInnerGap = 8;
     // Match section heights - distribute evenly with more space for image
     int totalHeight = leftCol.getHeight();
-    const int gainHeight = juce::jmax(140, totalHeight / 5);
-    const int compHeight = juce::jmax(140, totalHeight / 5);
+    // Use proportional heights that scale down better
+    const int gainHeight = juce::jmax(100, totalHeight / 5);
+    const int compHeight = juce::jmax(100, totalHeight / 5);
     
     gainSectionBounds = leftCol.removeFromTop (gainHeight);
     leftCol.removeFromTop (colInnerGap);
