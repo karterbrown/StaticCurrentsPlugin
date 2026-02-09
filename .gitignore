@@ -1,4 +1,7 @@
-# Build artifacts
+# Build outputs
+Builds/VisualStudio2022/.vs/
+Builds/VisualStudio2022/x64/
+Builds/VisualStudio2022/*.user
 Builds/**/build/
 Builds/**/intermediate/
 Builds/**/*.ilk
@@ -7,6 +10,14 @@ Builds/**/*.pdb
 *.a
 *.so
 *.dylib
+
+# JUCE library (submodule or external dependency)
+JUCE/
+
+# Portable and setup packages (generated binaries)
+PortablePackage/App/*.exe
+PortablePackage/*.zip
+SetupPackage/*.exe
 
 # IDEs
 .vscode/
@@ -22,3 +33,5 @@ Thumbs.db
 *.swp
 *.swo
 *~
+*.tmp
+*.log
