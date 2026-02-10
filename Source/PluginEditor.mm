@@ -10,6 +10,9 @@
 #include "PluginEditor.h"
 #if defined(_WIN32)
 #include <sapi.h>  // Windows Speech API
+#elif defined(__APPLE__)
+#include <AVFoundation/AVFoundation.h>
+#import <Cocoa/Cocoa.h>
 #endif
 
 //==============================================================================
@@ -217,10 +220,113 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
         CoUninitialize();
         updateRecordButton();
+#elif defined(__APPLE__)
+        // Use macOS NSSpeechSynthesizer for text-to-speech
+        @autoreleasepool {
+            NSSpeechSynthesizer* synth = [[NSSpeechSynthesizer alloc] initWithVoice:nil];
+            
+            if (synth != nil)
+            {
+                // Create a temporary AIFF file (NSSpeechSynthesizer outputs AIFF)
+                juce::File tempFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                           .getChildFile("tts_temp.aiff");
+                
+                NSString* nsText = [NSString stringWithUTF8String:text.toRawUTF8()];
+                NSURL* outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:tempFile.getFullPathName().toRawUTF8()]];
+                
+                // Start speaking to file
+                BOOL success = [synth startSpeakingString:nsText toURL:outputURL];
+                
+                if (success)
+                {
+                    // Wait for synthesis to complete (NSSpeechSynthesizer is asynchronous)
+                    while ([synth isSpeaking])
+                    {
+                        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+                    }
+                    
+                    // Convert AIFF to WAV for consistency
+                    juce::File wavFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                              .getChildFile("tts_temp.wav");
+                    
+                    // Load AIFF and convert to WAV
+                    juce::AudioFormatManager formatManager;
+                    formatManager.registerBasicFormats();
+                    
+                    std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(tempFile));
+                    if (reader != nullptr)
+                    {
+                        juce::WavAudioFormat wavFormat;
+                        std::unique_ptr<juce::FileOutputStream> outStream(wavFile.createOutputStream());
+                        
+                        if (outStream != nullptr)
+                        {
+                            std::unique_ptr<juce::AudioFormatWriter> writer(wavFormat.createWriterFor(
+                                outStream.get(),
+                                44100.0,
+                                reader->numChannels,
+                                16,
+                                {},
+                                0));
+                            
+                            if (writer != nullptr)
+                            {
+                                outStream.release(); // writer now owns the stream
+                                writer->writeFromAudioReader(*reader, 0, reader->lengthInSamples);
+                                writer.reset();
+                                
+                                // Load the WAV file into the sampler
+                                juce::MessageManager::callAsync([this, wavFile, tempFile]()
+                                {
+                                    if (wavFile.existsAsFile())
+                                    {
+                                        audioProcessor.loadSampleFromFile(wavFile);
+                                        fileLabel.setText("TTS: Generated", juce::dontSendNotification);
+                                        
+                                        // Clean up temp files after a delay
+                                        juce::Timer::callAfterDelay(1000, [wavFile, tempFile]()
+                                        {
+                                            wavFile.deleteFile();
+                                            tempFile.deleteFile();
+                                        });
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    
+                    // Clean up temp AIFF if WAV conversion failed
+                    if (!wavFile.existsAsFile())
+                    {
+                        // Just load the AIFF directly
+                        juce::MessageManager::callAsync([this, tempFile]()
+                        {
+                            if (tempFile.existsAsFile())
+                            {
+                                audioProcessor.loadSampleFromFile(tempFile);
+                                fileLabel.setText("TTS: Generated", juce::dontSendNotification);
+                                
+                                juce::Timer::callAfterDelay(1000, [tempFile]()
+                                {
+                                    tempFile.deleteFile();
+                                });
+                            }
+                        });
+                    }
+                }
+                else
+                {
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                           "Text-to-Speech",
+                                                           "Failed to generate speech.");
+                }
+            }
+        }
+        updateRecordButton();
 #else
         juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                  "Text-to-Speech",
-                                                 "Text-to-speech is only available on Windows.");
+                                                 "Text-to-speech is only available on Windows and macOS.");
 #endif
     };
     }  // Close if (!isEffect) for TTS
@@ -300,18 +406,19 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     }  // Close if (!isEffect) for progressSlider
 
     // Basic parameters
+    addAndMakeVisible (gainSectionLabel);
     addAndMakeVisible (gainSlider);
     addAndMakeVisible (gainLabel);
-    gainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    gainSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     gainSlider.setRange (0.0, 1.0, 0.01);
     gainSlider.setValue (0.7);
     gainSlider.onValueChange = [this] { *audioProcessor.getGainParameter() = static_cast<float> (gainSlider.getValue()); };
 
     addAndMakeVisible (pitchSlider);
     addAndMakeVisible (pitchLabel);
-    pitchSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    pitchSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     pitchSlider.setRange (0.5, 2.0, 0.01);
     pitchSlider.setValue (1.0);
     pitchSlider.setTextValueSuffix (" x");
@@ -320,8 +427,8 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     // Global Output Slider
     addAndMakeVisible (globalOutputSlider);
     addAndMakeVisible (globalOutputLabel);
-    globalOutputSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    globalOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    globalOutputSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    globalOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     globalOutputSlider.setRange (-24.0, 6.0, 0.1);
     globalOutputSlider.setValue (0.0);
     globalOutputSlider.setTextValueSuffix (" dB");
@@ -415,8 +522,8 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     {
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
-        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 18);
+        slider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+        slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
         slider.setRange (min, max, step);
         slider.setValue (value);
         slider.onValueChange = [this, param, &slider]
@@ -477,38 +584,38 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     addAndMakeVisible (compReleaseSlider);
     addAndMakeVisible (compMakeupSlider);
 
-    compThreshSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    compThreshSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compThreshSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    compThreshSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     compThreshSlider.setRange (-60.0, 0.0, 0.1);
     compThreshSlider.setValue (-20.0);
     compThreshSlider.setTextValueSuffix (" dB");
     compThreshSlider.onValueChange = [this] { *audioProcessor.getCompThreshParameter() = static_cast<float> (compThreshSlider.getValue()); };
 
-    compRatioSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    compRatioSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compRatioSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    compRatioSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     compRatioSlider.setRange (1.0, 20.0, 0.1);
     compRatioSlider.setValue (4.0);
     compRatioSlider.setTextValueSuffix (":1");
     compRatioSlider.onValueChange = [this] { *audioProcessor.getCompRatioParameter() = static_cast<float> (compRatioSlider.getValue()); };
 
-    compAttackSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    compAttackSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compAttackSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    compAttackSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     compAttackSlider.setRange (0.001, 0.1, 0.001);
     compAttackSlider.setValue (0.01);
     compAttackSlider.setSkewFactorFromMidPoint (0.01);
     compAttackSlider.setTextValueSuffix (" s");
     compAttackSlider.onValueChange = [this] { *audioProcessor.getCompAttackParameter() = static_cast<float> (compAttackSlider.getValue()); };
 
-    compReleaseSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    compReleaseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compReleaseSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    compReleaseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     compReleaseSlider.setRange (0.01, 1.0, 0.01);
     compReleaseSlider.setValue (0.1);
     compReleaseSlider.setSkewFactorFromMidPoint (0.1);
     compReleaseSlider.setTextValueSuffix (" s");
     compReleaseSlider.onValueChange = [this] { *audioProcessor.getCompReleaseParameter() = static_cast<float> (compReleaseSlider.getValue()); };
 
-    compMakeupSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    compMakeupSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    compMakeupSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    compMakeupSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
     compMakeupSlider.setRange (0.0, 24.0, 0.1);
     compMakeupSlider.setValue (0.0);
     compMakeupSlider.setTextValueSuffix (" dB");
@@ -572,19 +679,17 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
     startTimer (50);
 
-    const int minWidth = 1500;
-    const int minHeight = 950;
-    const int preferredWidth = 1700;
-    const int preferredHeight = 1020;
+    const int minWidth = 1000;
+    const int minHeight = 700;
 
-    // Size to a reasonable default without going full-screen.
+    // Start at minimum size
     auto displays = juce::Desktop::getInstance().getDisplays();
     auto primaryDisplay = displays.getPrimaryDisplay();
     if (primaryDisplay != nullptr)
     {
         auto screenArea = primaryDisplay->userArea;
-        setSize (juce::jmin (preferredWidth, screenArea.getWidth()),
-                 juce::jmin (preferredHeight, screenArea.getHeight()));
+        setSize (juce::jmin (minWidth, screenArea.getWidth()),
+                 juce::jmin (minHeight, screenArea.getHeight()));
         setResizeLimits (juce::jmin (minWidth, screenArea.getWidth()),
                          juce::jmin (minHeight, screenArea.getHeight()),
                          4800,
@@ -592,11 +697,18 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     }
     else
     {
-        setSize (preferredWidth, preferredHeight);
+        setSize (minWidth, minHeight);
         setResizeLimits (minWidth, minHeight, 4800, 3600);
     }
 
     setResizable (true, true);
+    
+    // For standalone apps, make sure the resize constraints are properly set
+    if (auto* constrainer = getConstrainer())
+    {
+        constrainer->setMinimumSize(juce::jmin(minWidth, 1500), juce::jmin(minHeight, 950));
+        constrainer->setMaximumSize(4800, 3600);
+    }
 }
 
 StaticCurrentsPluginAudioProcessorEditor::~StaticCurrentsPluginAudioProcessorEditor()
@@ -739,207 +851,222 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
         updateEQVisualization();
     }
 
-    auto bounds = getLocalBounds().reduced (12);
+    auto bounds = getLocalBounds().reduced (6);
 
-    const int headerHeight = 32;
-    const int buttonRowHeight = isEffect ? 0 : 44;
-    const int fileLabelHeight = isEffect ? 0 : 24;
-    const int ttsRowHeight = isEffect ? 0 : 70;
-    const int progressRowHeight = isEffect ? 0 : 40;
-    const int profileRowHeight = 30;
-    const int gapAfterProfile = 10;
-
-    auto topArea = bounds.removeFromTop (headerHeight + buttonRowHeight + fileLabelHeight + ttsRowHeight
-                                         + progressRowHeight + profileRowHeight + gapAfterProfile);
+    // Compact top section - 3 columns: Left controls | Middle (Logo) | Right controls
+    const int topSectionHeight = isEffect ? 115 : 175;
+    auto topArea = bounds.removeFromTop (topSectionHeight);
     topSectionBounds = topArea;
-
-    auto header = topArea.removeFromTop (headerHeight);
-    header.removeFromRight (12);
-
-    auto buttonRow = topArea.removeFromTop (buttonRowHeight);
+    
+    const int colGap = 8;
+    const int leftColWidth = (int)(topArea.getWidth() * 0.30);
+    const int rightColWidth = (int)(topArea.getWidth() * 0.30);
+    
+    auto leftCol = topArea.removeFromLeft (leftColWidth);
+    topArea.removeFromLeft (colGap);
+    auto rightCol = topArea.removeFromRight (rightColWidth);
+    topArea.removeFromRight (colGap);
+    auto middleCol = topArea;  // Logo area
+    
+    // Left column: TTS + Progress
     if (!isEffect) {
-        const int buttonGap = 8;
-        const int buttonWidth = juce::jmin (140, (buttonRow.getWidth() - buttonGap * 6) / 7);
-        const int totalButtonsWidth = buttonWidth * 7 + buttonGap * 6;
-        auto buttonStrip = buttonRow.withWidth (totalButtonsWidth)
-                                     .withX (buttonRow.getX() + (buttonRow.getWidth() - totalButtonsWidth) / 2);
-
-        loadButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        recordButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        bypassButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        playButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        generateButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        jumbleButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-        buttonStrip.removeFromLeft (buttonGap);
-        exportButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-
-        fileLabel.setBounds (topArea.removeFromTop (fileLabelHeight).reduced (10, 0));
+        auto ttsArea = leftCol.removeFromTop (55);
+        ttsLabel.setBounds (ttsArea.removeFromTop (16));
+        ttsTextEditor.setBounds (ttsArea.reduced (2));
+        
+        leftCol.removeFromTop (4);
+        auto progressArea = leftCol.removeFromTop (30);
+        auto progLabel = progressArea.removeFromLeft (65);
+        progressLabel.setBounds (progLabel);
+        progressArea.removeFromLeft (4);
+        progressSlider.setBounds (progressArea);
+        
+        leftCol.removeFromTop (4);
+        auto profileArea = leftCol.removeFromTop (22);
+        auto profLabel = profileArea.removeFromLeft (65);
+        profileLabel.setBounds (profLabel);
+        profileArea.removeFromLeft (4);
+        profileBox.setBounds (profileArea);
     }
-
-    // Text-to-speech text editor section (instrument only)
+    
+    // Middle column: Logo image
+    logoImageBounds = middleCol.reduced (10);
+    
+    // Right column: Buttons + File label
     if (!isEffect) {
-        auto ttsRow = topArea.removeFromTop (ttsRowHeight).reduced (60, 0);
-        const int ttsLabelWidth = 120;
-        const int ttsEditorWidth = ttsRow.getWidth() - ttsLabelWidth - 8;
-        const int ttsTotalWidth = ttsLabelWidth + 8 + ttsEditorWidth;
-        auto ttsStrip = ttsRow.withWidth (ttsTotalWidth)
-                              .withX (ttsRow.getX() + (ttsRow.getWidth() - ttsTotalWidth) / 2);
-        ttsLabel.setBounds (ttsStrip.removeFromTop (20).removeFromLeft (ttsLabelWidth));
-        ttsTextEditor.setBounds (ttsStrip.reduced (4));
-    } else {
-        topArea.removeFromTop (ttsRowHeight);  // Skip TTS section in effect mode
+        const int buttonHeight = 28;
+        const int buttonGap = 3;
+        auto btnArea = rightCol;
+        
+        // Stack buttons in 2 columns
+        const int btnColWidth = (btnArea.getWidth() - buttonGap) / 2;
+        auto leftBtnCol = btnArea.removeFromLeft (btnColWidth);
+        btnArea.removeFromLeft (buttonGap);
+        auto rightBtnCol = btnArea;
+        
+        loadButton.setBounds (leftBtnCol.removeFromTop (buttonHeight));
+        leftBtnCol.removeFromTop (buttonGap);
+        recordButton.setBounds (leftBtnCol.removeFromTop (buttonHeight));
+        leftBtnCol.removeFromTop (buttonGap);
+        bypassButton.setBounds (leftBtnCol.removeFromTop (buttonHeight));
+        leftBtnCol.removeFromTop (buttonGap);
+        playButton.setBounds (leftBtnCol.removeFromTop (buttonHeight));
+        
+        generateButton.setBounds (rightBtnCol.removeFromTop (buttonHeight));
+        rightBtnCol.removeFromTop (buttonGap);
+        jumbleButton.setBounds (rightBtnCol.removeFromTop (buttonHeight));
+        rightBtnCol.removeFromTop (buttonGap);
+        exportButton.setBounds (rightBtnCol.removeFromTop (buttonHeight));
+        rightBtnCol.removeFromTop (buttonGap);
+        fileLabel.setBounds (rightBtnCol.removeFromTop (buttonHeight));
     }
-
-    // Progress slider section (instrument only)
-    if (!isEffect) {
-        auto progressRow = topArea.removeFromTop (progressRowHeight).reduced (60, 0);
-        const int progressLabelWidth = 90;
-        const int progressSliderWidth = progressRow.getWidth() - progressLabelWidth - 8;
-        const int progressTotalWidth = progressLabelWidth + 8 + progressSliderWidth;
-        auto progressStrip = progressRow.withWidth (progressTotalWidth)
-                                        .withX (progressRow.getX() + (progressRow.getWidth() - progressTotalWidth) / 2);
-        progressLabel.setBounds (progressStrip.removeFromLeft (progressLabelWidth).reduced (4));
-        progressStrip.removeFromLeft (8);
-        progressSlider.setBounds (progressStrip.reduced (4));
-    } else {
-        topArea.removeFromTop (progressRowHeight);  // Skip progress slider in effect mode
-    }
-
-    auto profileRow = topArea.removeFromTop (profileRowHeight).reduced (60, 0);
-    const int profileLabelWidth = 90;
-    const int profileBoxWidth = 220;
-    const int profileTotalWidth = profileLabelWidth + 8 + profileBoxWidth;
-    auto profileStrip = profileRow.withWidth (profileTotalWidth)
-                                  .withX (profileRow.getX() + (profileRow.getWidth() - profileTotalWidth) / 2);
-    profileLabel.setBounds (profileStrip.removeFromLeft (profileLabelWidth).reduced (4));
-    profileStrip.removeFromLeft (8);
-    profileBox.setBounds (profileStrip.removeFromLeft (profileBoxWidth).reduced (4));
 
     auto content = bounds;
-    const int columnGap = 12;
-    const int colWidth = (content.getWidth() - columnGap * 2) / 3;
-
-    auto leftCol = content.removeFromLeft (colWidth);
-    content.removeFromLeft (columnGap);
-    auto midCol = content.removeFromLeft (colWidth);
-    content.removeFromLeft (columnGap);
-    auto rightCol = content;
-
-    const int colInnerGap = 8;
-    // Match section heights - distribute evenly with more space for image
-    int totalHeight = leftCol.getHeight();
-    // Use proportional heights that scale down better
-    const int gainHeight = juce::jmax(100, totalHeight / 5);
-    const int compHeight = juce::jmax(100, totalHeight / 5);
+    bounds.removeFromTop (4);
     
-    gainSectionBounds = leftCol.removeFromTop (gainHeight);
-    leftCol.removeFromTop (colInnerGap);
-    compSectionBounds = leftCol.removeFromTop (compHeight);
-    leftCol.removeFromTop (colInnerGap);
-    logoImageBounds = leftCol;  // Use all remaining space
+    // Signal flow layout: Top row = Input + EQ + Dynamics, Bottom row = Saturation (full width)
+    const int rowGap = 6;
+    const int topRowHeight = juce::jmax(140, (int)(content.getHeight() * 0.35));  // Top gets ~35% of height
+    
+    // Top row: Input section, EQ section, Dynamics section
+    auto topRow = content.removeFromTop (topRowHeight);
+    content.removeFromTop (rowGap);
+    
+    const int columnGap = 8;
+    const int inputColWidth = (int)(topRow.getWidth() * 0.13);  // Input gets ~13% width
+    const int dynamicsColWidth = (int)(topRow.getWidth() * 0.20);  // Dynamics gets ~20% width
+    
+    gainSectionBounds = topRow.removeFromLeft (inputColWidth);
+    topRow.removeFromLeft (columnGap);
+    
+    // Calculate remaining width for EQ and Dynamics
+    auto dynCol = topRow.removeFromRight (dynamicsColWidth);
+    topRow.removeFromRight (columnGap);
+    eqSectionBounds = topRow;  // EQ gets middle space
+    compSectionBounds = dynCol;
+    
+    // Bottom row: Saturation (full width) - now gets ~65% of height
+    saturationSectionBounds = content;
 
-    eqSectionBounds = midCol;
-    saturationSectionBounds = rightCol;
+    // Uniform knob size throughout the entire UI - smallest size
+    const int knobWidth = 65;
+    const int knobGap = 5;
 
-    const int knobWidth = 90;
-    const int knobGap = 10;
-
-    auto gainArea = gainSectionBounds.reduced (8);
-    const int gainTotalWidth = knobWidth * 3 + knobGap * 2;
-    auto gainStrip = gainArea.withWidth (gainTotalWidth)
-                             .withX (gainArea.getX() + (gainArea.getWidth() - gainTotalWidth) / 2);
-    auto knobArea = gainStrip.removeFromLeft (knobWidth);
-    gainLabel.setBounds (knobArea.removeFromTop (22));
+    // Gain section - vertically stacked Gain and Pitch knobs
+    auto gainArea = gainSectionBounds.reduced (3);
+    auto gainHeader = gainArea.removeFromTop (16);
+    gainSectionLabel.setBounds (gainHeader);
+    gainSectionLabel.setJustificationType (juce::Justification::centred);
+    gainSectionLabel.setFont (juce::FontOptions (10.0f));
+    
+    const int gainKnobHeight = (gainArea.getHeight() - knobGap) / 2;
+    auto knobSlot = gainArea.removeFromTop (gainKnobHeight);
+    gainLabel.setBounds (knobSlot.removeFromTop (12));
     gainLabel.setJustificationType (juce::Justification::centred);
-    gainLabel.setFont (juce::FontOptions (14.0f));
-    gainSlider.setBounds (knobArea.reduced (2));
-    gainStrip.removeFromLeft (knobGap);
-    knobArea = gainStrip.removeFromLeft (knobWidth);
-    pitchLabel.setBounds (knobArea.removeFromTop (22));
+    gainLabel.setFont (juce::FontOptions (9.0f));
+    gainSlider.setBounds (knobSlot.reduced (8, 0));
+    
+    gainArea.removeFromTop (knobGap);
+    knobSlot = gainArea.removeFromTop (gainKnobHeight);
+    pitchLabel.setBounds (knobSlot.removeFromTop (12));
     pitchLabel.setJustificationType (juce::Justification::centred);
-    pitchLabel.setFont (juce::FontOptions (14.0f));
-    pitchSlider.setBounds (knobArea.reduced (2));
-    gainStrip.removeFromLeft (knobGap);
-    knobArea = gainStrip.removeFromLeft (knobWidth);
-    globalOutputLabel.setBounds (knobArea.removeFromTop (22));
-    globalOutputLabel.setJustificationType (juce::Justification::centred);
-    globalOutputLabel.setFont (juce::FontOptions (14.0f));
-    globalOutputSlider.setBounds (knobArea.reduced (2));
+    pitchLabel.setFont (juce::FontOptions (9.0f));
+    pitchSlider.setBounds (knobSlot.reduced (8, 0));
 
-    auto compArea = compSectionBounds.reduced (8);
-    auto compHeaderArea = compArea.removeFromTop (26);
+    // Compression section - wrap knobs in 2 rows for better fit
+    auto compArea = compSectionBounds.reduced (3);
+    auto compHeaderArea = compArea.removeFromTop (16);
     compLabel.setBounds (compHeaderArea);
     compLabel.setJustificationType (juce::Justification::centred);
-    compLabel.setFont (juce::FontOptions (16.0f));
+    compLabel.setFont (juce::FontOptions (10.0f));
     
-    // Calculate knob size based on available width
-    int availableWidth = compArea.getWidth();
-    int numKnobs = 5;
-    int totalGaps = (numKnobs - 1) * knobGap;
-    int compKnobWidth = juce::jmin(knobWidth, (availableWidth - totalGaps) / numKnobs);
+    // Reserve space for Output knob at bottom
+    auto outputArea = compArea.removeFromBottom (70);
+    compArea.removeFromBottom (3);  // Small gap
     
-    const int compTotalWidth = compKnobWidth * numKnobs + knobGap * (numKnobs - 1);
-    auto compStrip = compArea.withWidth (compTotalWidth)
-                             .withX (compArea.getX() + (compArea.getWidth() - compTotalWidth) / 2);
-
+    // Split compressor knobs into 2 rows: top row = 3 knobs, bottom row = 2 knobs
+    const int compRowHeight = (compArea.getHeight() - knobGap) / 2;
+    const int compKnobWidth = 58;
+    const int compKnobGap = 4;
+    
+    // Top row: Threshold, Ratio, Attack
+    auto compTopRow = compArea.removeFromTop (compRowHeight);
+    const int topRowWidth = compKnobWidth * 3 + compKnobGap * 2;
+    auto topStrip = compTopRow.withWidth (topRowWidth)
+                          .withX (compTopRow.getX() + (compTopRow.getWidth() - topRowWidth) / 2);
+    
+    compArea.removeFromTop (knobGap);
+    
+    // Bottom row: Release, Makeup
+    auto compBottomRow = compArea;
+    const int bottomRowWidth = compKnobWidth * 2 + compKnobGap;
+    auto bottomStrip = compBottomRow.withWidth (bottomRowWidth)
+                                .withX (compBottomRow.getX() + (compBottomRow.getWidth() - bottomRowWidth) / 2);
+    
+    auto compStrip = topStrip;
     auto compSlot = compStrip.removeFromLeft (compKnobWidth);
-    compThreshLabel.setBounds (compSlot.removeFromTop (20));
+    compThreshLabel.setBounds (compSlot.removeFromTop (12));
     compThreshLabel.setJustificationType (juce::Justification::centred);
-    compThreshLabel.setFont (juce::FontOptions (14.0f));
-    compThreshSlider.setBounds (compSlot.reduced (2));
-    compStrip.removeFromLeft (knobGap);
+    compThreshLabel.setFont (juce::FontOptions (8.0f));
+    compThreshSlider.setBounds (compSlot);
+    compStrip.removeFromLeft (compKnobGap);
 
     compSlot = compStrip.removeFromLeft (compKnobWidth);
-    compRatioLabel.setBounds (compSlot.removeFromTop (20));
+    compRatioLabel.setBounds (compSlot.removeFromTop (12));
     compRatioLabel.setJustificationType (juce::Justification::centred);
-    compRatioLabel.setFont (juce::FontOptions (14.0f));
-    compRatioSlider.setBounds (compSlot.reduced (2));
-    compStrip.removeFromLeft (knobGap);
+    compRatioLabel.setFont (juce::FontOptions (8.0f));
+    compRatioSlider.setBounds (compSlot);
+    compStrip.removeFromLeft (compKnobGap);
 
     compSlot = compStrip.removeFromLeft (compKnobWidth);
-    compAttackLabel.setBounds (compSlot.removeFromTop (20));
+    compAttackLabel.setBounds (compSlot.removeFromTop (12));
     compAttackLabel.setJustificationType (juce::Justification::centred);
-    compAttackLabel.setFont (juce::FontOptions (14.0f));
-    compAttackSlider.setBounds (compSlot.reduced (2));
-    compStrip.removeFromLeft (knobGap);
+    compAttackLabel.setFont (juce::FontOptions (8.0f));
+    compAttackSlider.setBounds (compSlot);
 
+    // Bottom row
+    compStrip = bottomStrip;
     compSlot = compStrip.removeFromLeft (compKnobWidth);
-    compReleaseLabel.setBounds (compSlot.removeFromTop (20));
+    compReleaseLabel.setBounds (compSlot.removeFromTop (12));
     compReleaseLabel.setJustificationType (juce::Justification::centred);
-    compReleaseLabel.setFont (juce::FontOptions (14.0f));
-    compReleaseSlider.setBounds (compSlot.reduced (2));
-    compStrip.removeFromLeft (knobGap);
+    compReleaseLabel.setFont (juce::FontOptions (8.0f));
+    compReleaseSlider.setBounds (compSlot);
+    compStrip.removeFromLeft (compKnobGap);
 
     compSlot = compStrip.removeFromLeft (compKnobWidth);
-    compMakeupLabel.setBounds (compSlot.removeFromTop (20));
+    compMakeupLabel.setBounds (compSlot.removeFromTop (12));
     compMakeupLabel.setJustificationType (juce::Justification::centred);
-    compMakeupLabel.setFont (juce::FontOptions (14.0f));
-    compMakeupSlider.setBounds (compSlot.reduced (2));
+    compMakeupLabel.setFont (juce::FontOptions (8.0f));
+    compMakeupSlider.setBounds (compSlot);
+    
+    // Output knob at bottom of compression section
+    globalOutputLabel.setBounds (outputArea.removeFromTop (11));
+    globalOutputLabel.setJustificationType (juce::Justification::centred);
+    globalOutputLabel.setFont (juce::FontOptions (8.5f));
+    globalOutputSlider.setBounds (outputArea.reduced (6, 0));
 
-    auto eqArea = eqSectionBounds.reduced (8);
-    auto eqHeader = eqArea.removeFromTop (28);
+    auto eqArea = eqSectionBounds.reduced (3);
+    auto eqHeader = eqArea.removeFromTop (16);
     eqLabel.setBounds (eqHeader);
     eqLabel.setJustificationType (juce::Justification::centred);
-    eqLabel.setFont (juce::FontOptions (16.0f));
-    auto eqResetRow = eqArea.removeFromTop (26);
-    resetButton.setBounds (eqResetRow.withSizeKeepingCentre (180, 24));
+    eqLabel.setFont (juce::FontOptions (10.0f));
+    auto eqResetRow = eqArea.removeFromTop (22);
+    resetButton.setBounds (eqResetRow.withSizeKeepingCentre (150, 20));
     eqVisualization.setBounds (eqArea.reduced (2));
 
-    auto satArea = saturationSectionBounds.reduced (8);
-    auto satHeaderArea = satArea.removeFromTop (28);
+    auto satArea = saturationSectionBounds.reduced (3);
+    auto satHeaderArea = satArea.removeFromTop (20);
     saturationSectionLabel.setBounds (satHeaderArea);
     saturationSectionLabel.setJustificationType (juce::Justification::centred);
-    saturationSectionLabel.setFont (juce::FontOptions (16.0f));
+    saturationSectionLabel.setFont (juce::FontOptions (12.0f));
 
     const int satRows = 6;
-    const int labelWidth = 70;
+    // Saturation is now the main section - larger knobs and labels
+    const int labelWidth = 75;
+    const int satKnobWidth = 78;
+    const int satKnobGap = 8;
     const int rowHeight = satArea.getHeight() / satRows;
-    const int satTotalWidth = labelWidth + knobWidth * 4 + knobGap * 4;
+    const int satTotalWidth = labelWidth + satKnobWidth * 4 + satKnobGap * 3;
 
     auto layoutSatRow = [=] (juce::Rectangle<int> row,
                              juce::Label& groupLabel,
@@ -954,26 +1081,34 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
         groupLabel.setBounds (labelArea.reduced (2));
 
         groupLabel.setJustificationType (juce::Justification::centred);
-        groupLabel.setFont (juce::FontOptions (14.0f));
+        groupLabel.setFont (juce::FontOptions (11.0f));
         
-        auto knob = rowStrip.removeFromLeft (knobWidth);
-        aLabel.setBounds (knob.removeFromTop (18));
-        a.setBounds (knob.reduced (2));
-        rowStrip.removeFromLeft (knobGap);
+        auto knob = rowStrip.removeFromLeft (satKnobWidth);
+        aLabel.setBounds (knob.removeFromTop (14));
+        aLabel.setJustificationType (juce::Justification::centred);
+        aLabel.setFont (juce::FontOptions (10.0f));
+        a.setBounds (knob);
+        rowStrip.removeFromLeft (satKnobGap);
 
-        knob = rowStrip.removeFromLeft (knobWidth);
-        bLabel.setBounds (knob.removeFromTop (18));
-        b.setBounds (knob.reduced (2));
-        rowStrip.removeFromLeft (knobGap);
+        knob = rowStrip.removeFromLeft (satKnobWidth);
+        bLabel.setBounds (knob.removeFromTop (14));
+        bLabel.setJustificationType (juce::Justification::centred);
+        bLabel.setFont (juce::FontOptions (10.0f));
+        b.setBounds (knob);
+        rowStrip.removeFromLeft (satKnobGap);
 
-        knob = rowStrip.removeFromLeft (knobWidth);
-        cLabel.setBounds (knob.removeFromTop (18));
-        c.setBounds (knob.reduced (2));
-        rowStrip.removeFromLeft (knobGap);
+        knob = rowStrip.removeFromLeft (satKnobWidth);
+        cLabel.setBounds (knob.removeFromTop (14));
+        cLabel.setJustificationType (juce::Justification::centred);
+        cLabel.setFont (juce::FontOptions (10.0f));
+        c.setBounds (knob);
+        rowStrip.removeFromLeft (satKnobGap);
 
-        knob = rowStrip.removeFromLeft (knobWidth);
-        dLabel.setBounds (knob.removeFromTop (18));
-        d.setBounds (knob.reduced (2));
+        knob = rowStrip.removeFromLeft (satKnobWidth);
+        dLabel.setBounds (knob.removeFromTop (14));
+        dLabel.setJustificationType (juce::Justification::centred);
+        dLabel.setFont (juce::FontOptions (10.0f));
+        d.setBounds (knob);
     };
 
     saturationTypeBounds[0] = satArea.removeFromTop (rowHeight);

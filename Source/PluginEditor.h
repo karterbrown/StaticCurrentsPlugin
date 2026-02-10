@@ -94,6 +94,7 @@ private:
     
     // Basic parameters
     juce::Slider gainSlider, pitchSlider, globalOutputSlider;
+    juce::Label gainSectionLabel { {}, "Input" };
     juce::Label gainLabel { {}, "Gain" }, pitchLabel { {}, "Pitch" }, globalOutputLabel { {}, "Output" };
     juce::ComboBox profileBox;
       bool profileInitialized = false;
@@ -160,7 +161,7 @@ private:
     
     // Compressor
     juce::Slider compThreshSlider, compRatioSlider, compAttackSlider, compReleaseSlider, compMakeupSlider;
-    juce::Label compLabel { {}, "FET Compressor" };
+    juce::Label compLabel { {}, "Dynamics + Output" };
     juce::Label compThreshLabel { {}, "Thresh" }, compRatioLabel { {}, "Ratio" };
     juce::Label compAttackLabel { {}, "Attack" }, compReleaseLabel { {}, "Release" }, compMakeupLabel { {}, "Makeup" };
 

@@ -14,9 +14,9 @@
     <key>CFBundleDisplayName</key>
     <string>Static Currents Plugin</string>
     <key>CFBundlePackageType</key>
-    <string>BNDL</string>
+    <string></string>
     <key>CFBundleSignature</key>
-    <string>????</string>
+    <string></string>
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
     <key>CFBundleVersion</key>
@@ -25,31 +25,5 @@
     <string></string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>AudioComponents</key>
-    <array>
-      <dict>
-        <key>name</key>
-        <string>Karter Brown: Static Currents Plugin</string>
-        <key>description</key>
-        <string>Static Currents Plugin</string>
-        <key>factoryFunction</key>
-        <string>StaticCurrentsPluginAUFactory</string>
-        <key>manufacturer</key>
-        <string>Manu</string>
-        <key>type</key>
-        <string>aumu</string>
-        <key>subtype</key>
-        <string>Pqc1</string>
-        <key>version</key>
-        <integer>65536</integer>
-        <key>resourceUsage</key>
-        <dict>
-          <key>network.client</key>
-          <true/>
-          <key>temporary-exception.files.all.read-write</key>
-          <true/>
-        </dict>
-      </dict>
-    </array>
   </dict>
 </plist>
