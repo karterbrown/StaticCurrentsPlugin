@@ -16,22 +16,29 @@
 StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEditor (StaticCurrentsPluginAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
+    // Check if this is the effect version
+    isEffect = isEffectVersion();
+    
     // Load image from Resources folder - try multiple potential locations
-    juce::File imageFile;
+    {
+        juce::File imageFile;
+        
+        // Try project root Resources folder
+        imageFile = juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile("Resources").getChildFile("SCimage.png");
+        
+        if (!imageFile.existsAsFile())
+            imageFile = juce::File::getCurrentWorkingDirectory().getChildFile("Resources").getChildFile("SCimage.png");
+        
+        if (!imageFile.existsAsFile())
+            imageFile = juce::File("/Users/karterbrown/Desktop/Dev/Plugins/StaticCurrentsPlugin/Resources/SCimage.png");
+        
+        if (imageFile.existsAsFile())
+            logoImage = juce::ImageCache::getFromFile(imageFile);
+    }
     
-    // Try project root Resources folder
-    imageFile = juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile("Resources").getChildFile("SCimage.png");
-    
-    if (!imageFile.existsAsFile())
-        imageFile = juce::File::getCurrentWorkingDirectory().getChildFile("Resources").getChildFile("SCimage.png");
-    
-    if (!imageFile.existsAsFile())
-        imageFile = juce::File("/Users/karterbrown/Desktop/Dev/Plugins/StaticCurrentsPlugin/Resources/SCimage.png");
-    
-    if (imageFile.existsAsFile())
-        logoImage = juce::ImageCache::getFromFile(imageFile);
-    // Setup load button
-    addAndMakeVisible (loadButton);
+    // Setup load button (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (loadButton);
     loadButton.onClick = [this]
     {
         auto chooser = std::make_shared<juce::FileChooser> ("Select a sample file...",
@@ -50,13 +57,19 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
             }
         });
     };
+    }  // Close if (!isEffect) for loadButton
 
     addAndMakeVisible (fileLabel);
-    fileLabel.setText ("No sample loaded", juce::dontSendNotification);
+    if (!isEffect) {
+        fileLabel.setText ("No sample loaded", juce::dontSendNotification);
+    } else {
+        fileLabel.setVisible(false);
+    }
     fileLabel.setJustificationType (juce::Justification::centred);
 
-    // Setup record button
-    addAndMakeVisible (recordButton);
+    // Setup record button (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (recordButton);
     recordButton.onClick = [this]
     {
         if (audioProcessor.isRecording())
@@ -79,21 +92,25 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         }
         updateRecordButton();
     };
+    }  // Close if (!isEffect) for recordButton
 
-    // Setup bypass button
-    addAndMakeVisible (bypassButton);
-    bypassButton.onClick = [this]
-    {
-        bool bypassed = !(*audioProcessor.getBypassParameter());
-        *audioProcessor.getBypassParameter() = bypassed;
-        bypassButton.setButtonText (bypassed ? "Bypass (ON)" : "Bypass");
-        bypassButton.setColour (juce::TextButton::buttonColourId,
-                                bypassed ? juce::Colours::orange
-                                         : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
-    };
+    // Setup bypass button (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (bypassButton);
+        bypassButton.onClick = [this]
+        {
+            bool bypassed = !(*audioProcessor.getBypassParameter());
+            *audioProcessor.getBypassParameter() = bypassed;
+            bypassButton.setButtonText (bypassed ? "Bypass (ON)" : "Bypass");
+            bypassButton.setColour (juce::TextButton::buttonColourId,
+                                    bypassed ? juce::Colours::orange
+                                             : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+        };
+    }
 
-    // Setup play button
-    addAndMakeVisible (playButton);
+    // Setup play button (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (playButton);
     playButton.onClick = [this]
     {
         if (isPlaying)
@@ -112,9 +129,11 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
             isPlaying = true;
         }
     };
+    }  // Close if (!isEffect) for playButton
 
-    // Setup TTS text editor
-    addAndMakeVisible (ttsTextEditor);
+    // Setup TTS text editor (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (ttsTextEditor);
     ttsTextEditor.setMultiLine (true);
     ttsTextEditor.setReturnKeyStartsNewLine (true);
     ttsTextEditor.setScrollbarsShown (true);
@@ -192,7 +211,6 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                         }
                     });
                 }
-            }
 
             pVoice->Release();
         }
@@ -205,17 +223,19 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                                                  "Text-to-speech is only available on Windows.");
 #endif
     };
+    }  // Close if (!isEffect) for TTS
 
-    // Setup jumble button
-    addAndMakeVisible (jumbleButton);
-    jumbleButton.onClick = [this]
-    {
-        audioProcessor.jumbleSample();
-        updateRecordButton();
-    };
+    // Setup jumble button (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (jumbleButton);
+        jumbleButton.onClick = [this]
+        {
+            audioProcessor.jumbleSample();
+            updateRecordButton();
+        };
 
-    // Setup export button (formerly generate - export to file)
-    addAndMakeVisible (exportButton);
+        // Setup export button (formerly generate - export to file)
+        addAndMakeVisible (exportButton);
     exportButton.onClick = [this]
     {
         juce::PopupMenu formatMenu;
@@ -258,9 +278,12 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
             });
         });
     };
-    // Setup progress slider
-    addAndMakeVisible (progressSlider);
-    addAndMakeVisible (progressLabel);
+    }  // Close if (!isEffect) for export/jumble
+
+    // Setup progress slider (instrument/standalone only)
+    if (!isEffect) {
+        addAndMakeVisible (progressSlider);
+        addAndMakeVisible (progressLabel);
     progressSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     progressSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     progressSlider.setRange (0.0, 1.0, 0.001);
@@ -271,9 +294,10 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         if (isPlaying)
             audioProcessor.stopSamplePlayback();
     };
-    // Disable all progress slider interactions to prevent unintended playback
-    progressSlider.onValueChange = nullptr;
-    progressSlider.onDragEnd = nullptr;
+        // Disable all progress slider interactions to prevent unintended playback
+        progressSlider.onValueChange = nullptr;
+        progressSlider.onDragEnd = nullptr;
+    }  // Close if (!isEffect) for progressSlider
 
     // Basic parameters
     addAndMakeVisible (gainSlider);
@@ -676,7 +700,11 @@ void StaticCurrentsPluginAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (15.0f));
-    g.drawFittedText ("Voice Sampler & Processor", getLocalBounds(), juce::Justification::centredTop, 1);
+    if (isEffect) {
+        g.drawFittedText ("Audio Processor", getLocalBounds(), juce::Justification::centredTop, 1);
+    } else {
+        g.drawFittedText ("Voice Sampler & Processor", getLocalBounds(), juce::Justification::centredTop, 1);
+    }
 }
 
 void StaticCurrentsPluginAudioProcessorEditor::resized()
@@ -714,10 +742,10 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     auto bounds = getLocalBounds().reduced (12);
 
     const int headerHeight = 32;
-    const int buttonRowHeight = 44;
-    const int fileLabelHeight = 24;
-    const int ttsRowHeight = 70;
-    const int progressRowHeight = 40;
+    const int buttonRowHeight = isEffect ? 0 : 44;
+    const int fileLabelHeight = isEffect ? 0 : 24;
+    const int ttsRowHeight = isEffect ? 0 : 70;
+    const int progressRowHeight = isEffect ? 0 : 40;
     const int profileRowHeight = 30;
     const int gapAfterProfile = 10;
 
@@ -729,47 +757,58 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     header.removeFromRight (12);
 
     auto buttonRow = topArea.removeFromTop (buttonRowHeight);
-    const int buttonGap = 8;
-    const int buttonWidth = juce::jmin (140, (buttonRow.getWidth() - buttonGap * 6) / 7);
-    const int totalButtonsWidth = buttonWidth * 7 + buttonGap * 6;
-    auto buttonStrip = buttonRow.withWidth (totalButtonsWidth)
-                                 .withX (buttonRow.getX() + (buttonRow.getWidth() - totalButtonsWidth) / 2);
+    if (!isEffect) {
+        const int buttonGap = 8;
+        const int buttonWidth = juce::jmin (140, (buttonRow.getWidth() - buttonGap * 6) / 7);
+        const int totalButtonsWidth = buttonWidth * 7 + buttonGap * 6;
+        auto buttonStrip = buttonRow.withWidth (totalButtonsWidth)
+                                     .withX (buttonRow.getX() + (buttonRow.getWidth() - totalButtonsWidth) / 2);
 
-    loadButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    recordButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    bypassButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    playButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    generateButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    jumbleButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
-    buttonStrip.removeFromLeft (buttonGap);
-    exportButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        loadButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        recordButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        bypassButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        playButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        generateButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        jumbleButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+        buttonStrip.removeFromLeft (buttonGap);
+        exportButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
 
-    fileLabel.setBounds (topArea.removeFromTop (fileLabelHeight).reduced (10, 0));
+        fileLabel.setBounds (topArea.removeFromTop (fileLabelHeight).reduced (10, 0));
+    }
 
-    // Text-to-speech text editor section
-    auto ttsRow = topArea.removeFromTop (ttsRowHeight).reduced (60, 0);
-    const int ttsLabelWidth = 120;
-    const int ttsEditorWidth = ttsRow.getWidth() - ttsLabelWidth - 8;
-    const int ttsTotalWidth = ttsLabelWidth + 8 + ttsEditorWidth;
-    auto ttsStrip = ttsRow.withWidth (ttsTotalWidth)
-                          .withX (ttsRow.getX() + (ttsRow.getWidth() - ttsTotalWidth) / 2);
-    ttsLabel.setBounds (ttsStrip.removeFromTop (20).removeFromLeft (ttsLabelWidth));
-    ttsTextEditor.setBounds (ttsStrip.reduced (4));
+    // Text-to-speech text editor section (instrument only)
+    if (!isEffect) {
+        auto ttsRow = topArea.removeFromTop (ttsRowHeight).reduced (60, 0);
+        const int ttsLabelWidth = 120;
+        const int ttsEditorWidth = ttsRow.getWidth() - ttsLabelWidth - 8;
+        const int ttsTotalWidth = ttsLabelWidth + 8 + ttsEditorWidth;
+        auto ttsStrip = ttsRow.withWidth (ttsTotalWidth)
+                              .withX (ttsRow.getX() + (ttsRow.getWidth() - ttsTotalWidth) / 2);
+        ttsLabel.setBounds (ttsStrip.removeFromTop (20).removeFromLeft (ttsLabelWidth));
+        ttsTextEditor.setBounds (ttsStrip.reduced (4));
+    } else {
+        topArea.removeFromTop (ttsRowHeight);  // Skip TTS section in effect mode
+    }
 
-    auto progressRow = topArea.removeFromTop (progressRowHeight).reduced (60, 0);
-    const int progressLabelWidth = 90;
-    const int progressSliderWidth = progressRow.getWidth() - progressLabelWidth - 8;
-    const int progressTotalWidth = progressLabelWidth + 8 + progressSliderWidth;
-    auto progressStrip = progressRow.withWidth (progressTotalWidth)
-                                    .withX (progressRow.getX() + (progressRow.getWidth() - progressTotalWidth) / 2);
-    progressLabel.setBounds (progressStrip.removeFromLeft (progressLabelWidth).reduced (4));
-    progressStrip.removeFromLeft (8);
-    progressSlider.setBounds (progressStrip.reduced (4));
+    // Progress slider section (instrument only)
+    if (!isEffect) {
+        auto progressRow = topArea.removeFromTop (progressRowHeight).reduced (60, 0);
+        const int progressLabelWidth = 90;
+        const int progressSliderWidth = progressRow.getWidth() - progressLabelWidth - 8;
+        const int progressTotalWidth = progressLabelWidth + 8 + progressSliderWidth;
+        auto progressStrip = progressRow.withWidth (progressTotalWidth)
+                                        .withX (progressRow.getX() + (progressRow.getWidth() - progressTotalWidth) / 2);
+        progressLabel.setBounds (progressStrip.removeFromLeft (progressLabelWidth).reduced (4));
+        progressStrip.removeFromLeft (8);
+        progressSlider.setBounds (progressStrip.reduced (4));
+    } else {
+        topArea.removeFromTop (progressRowHeight);  // Skip progress slider in effect mode
+    }
 
     auto profileRow = topArea.removeFromTop (profileRowHeight).reduced (60, 0);
     const int profileLabelWidth = 90;
@@ -1057,4 +1096,15 @@ void StaticCurrentsPluginAudioProcessorEditor::syncSlidersFromParameters()
     setSlider (bitRateSlider, audioProcessor.getBitRateParameter()->load());
     setSlider (bitMixSlider, audioProcessor.getBitMixParameter()->load());
     setSlider (bitOutputSlider, audioProcessor.getBitOutputParameter()->load());
+}
+
+bool StaticCurrentsPluginAudioProcessorEditor::isEffectVersion() const
+{
+    // Check the executable/bundle path to determine if this is the effect version
+    auto exePath = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+    auto bundlePath = exePath.getParentDirectory().getParentDirectory();
+    
+    // Check if "Effect" appears in the bundle name or path
+    return bundlePath.getFullPathName().contains("Effect") || 
+           exePath.getFullPathName().contains("Effect");
 }

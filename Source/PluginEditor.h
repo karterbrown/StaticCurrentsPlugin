@@ -61,7 +61,8 @@ private:
     void timerCallback() override;
     void updateRecordButton();
     void updateEQVisualization();
-  void syncSlidersFromParameters();
+    void syncSlidersFromParameters();
+    bool isEffectVersion() const;  // Check if running as audio effect
     
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
@@ -87,6 +88,7 @@ private:
     juce::Rectangle<int> logoImageBounds;
     
     bool isPlaying = false;
+    bool isEffect = false;  // Whether this is the effect version or instrument
     
     std::unique_ptr<juce::FileChooser> fileChooser;
     

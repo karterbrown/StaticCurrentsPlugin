@@ -29,13 +29,13 @@
     <array>
       <dict>
         <key>name</key>
-        <string>yourcompany: Static Currents Plugin</string>
+        <string>Static Currents Plugin</string>
         <key>description</key>
         <string>Static Currents Plugin</string>
         <key>factoryFunction</key>
         <string>StaticCurrentsPluginAUFactory</string>
         <key>manufacturer</key>
-        <string>Manu</string>
+        <string>STAT</string>
         <key>type</key>
         <string>aumu</string>
         <key>subtype</key>

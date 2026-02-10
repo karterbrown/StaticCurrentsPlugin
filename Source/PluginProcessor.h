@@ -154,6 +154,7 @@ public:
 private:
   void clearLoadedSample();
   juce::File createRecordingTempFile() const;
+  bool isEffectVersion() const;
 
     //==============================================================================
     juce::Synthesiser sampler;
@@ -167,6 +168,7 @@ private:
     juce::File lastRecordingFile;
     juce::File originalRecordingFile; // Tracks the last recorded sample (not jumbled/loaded)
     bool clearedOnStart = false;
+    bool isEffect = false;
     
     // Parameters
     std::atomic<float> gain { 0.7f };       // 0.0 to 1.0

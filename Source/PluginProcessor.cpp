@@ -20,6 +20,8 @@ StaticCurrentsPluginAudioProcessor::StaticCurrentsPluginAudioProcessor()
                        )
 #endif
 {
+    isEffect = isEffectVersion();
+
     // Register audio file formats (WAV, AIFF)
     formatManager.registerBasicFormats();
     
@@ -35,6 +37,15 @@ StaticCurrentsPluginAudioProcessor::StaticCurrentsPluginAudioProcessor()
 
 StaticCurrentsPluginAudioProcessor::~StaticCurrentsPluginAudioProcessor()
 {
+}
+
+bool StaticCurrentsPluginAudioProcessor::isEffectVersion() const
+{
+    auto exePath = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+    auto bundlePath = exePath.getParentDirectory().getParentDirectory();
+
+    return bundlePath.getFullPathName().contains("Effect")
+        || exePath.getFullPathName().contains("Effect");
 }
 
 //==============================================================================
@@ -475,41 +486,45 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
     juce::ScopedNoDenormals noDenormals;
     auto totalNumInputChannels  = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
+    const bool effectMode = isEffect;
 
-    // Trigger sample playback if requested
-    if (shouldTriggerNote.exchange(false) && sampler.getNumSounds() > 0)
+    if (!effectMode)
     {
-        DBG("TRIGGERING NEW NOTE - Play button pressed");
-        
-        // Calculate MIDI note based on pitch parameter
-        // pitch: 0.5 = -12 semitones, 1.0 = 0 semitones, 2.0 = +12 semitones
-        float pitchValue = pitch.load();
-        float semitones = 12.0f * std::log2(pitchValue);
-        int midiNote = 60 + static_cast<int>(std::round(semitones));
-        midiNote = juce::jlimit(0, 127, midiNote);
-        
-        lastNoteTriggered = midiNote;
-        lastPitchValue = pitchValue;
-        samplesSinceNoteOn = 0;
-        isNoteCurrentlyPlaying = true;
-        midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
-    }
-    
-    // Stop sample playback if requested
-    if (shouldStopNote.exchange(false))
-    {
-        DBG("STOP requested - stopping all playback");
-        sampler.allNotesOff(1, true);
-        if (lastNoteTriggered >= 0)
+        // Trigger sample playback if requested
+        if (shouldTriggerNote.exchange(false) && sampler.getNumSounds() > 0)
         {
-            midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
-            lastNoteTriggered = -1;
+            DBG("TRIGGERING NEW NOTE - Play button pressed");
+            
+            // Calculate MIDI note based on pitch parameter
+            // pitch: 0.5 = -12 semitones, 1.0 = 0 semitones, 2.0 = +12 semitones
+            float pitchValue = pitch.load();
+            float semitones = 12.0f * std::log2(pitchValue);
+            int midiNote = 60 + static_cast<int>(std::round(semitones));
+            midiNote = juce::jlimit(0, 127, midiNote);
+            
+            lastNoteTriggered = midiNote;
+            lastPitchValue = pitchValue;
+            samplesSinceNoteOn = 0;
+            isNoteCurrentlyPlaying = true;
+            midiMessages.addEvent(juce::MidiMessage::noteOn(1, midiNote, (juce::uint8)100), 0);
         }
-        isNoteCurrentlyPlaying = false;
-        samplesSinceNoteOn = 0;
         
-        // Prevent any pending trigger
-        shouldTriggerNote.store(false);
+        // Stop sample playback if requested
+        if (shouldStopNote.exchange(false))
+        {
+            DBG("STOP requested - stopping all playback");
+            sampler.allNotesOff(1, true);
+            if (lastNoteTriggered >= 0)
+            {
+                midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
+                lastNoteTriggered = -1;
+            }
+            isNoteCurrentlyPlaying = false;
+            samplesSinceNoteOn = 0;
+            
+            // Prevent any pending trigger
+            shouldTriggerNote.store(false);
+        }
     }
 
     // Recording incoming audio - copy input before clearing
@@ -557,7 +572,7 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
         buffer.clear (i, 0, buffer.getNumSamples());
     
     // Only clear input channels if NOT recording (to prevent feedback during playback)
-    if (!recording)
+    if (!recording && !effectMode)
     {
         for (auto i = 0; i < totalNumInputChannels; ++i)
             buffer.clear (i, 0, buffer.getNumSamples());
@@ -566,70 +581,73 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
     // Seek functionality disabled to prevent unintended looping
     seekPosition.store(-1.0f);
 
-    // CRITICAL: Stop playback BEFORE rendering if we're near the end to prevent looping
-    if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
+    if (!effectMode)
     {
-        float baseSampleLength = sampleLength.load();
-        
-        if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
+        // CRITICAL: Stop playback BEFORE rendering if we're near the end to prevent looping
+        if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
         {
-            // Account for pitch: pitch changes the playback rate
-            float currentPitchValue = lastPitchValue;
-            float actualDuration = baseSampleLength / currentPitchValue;
+            float baseSampleLength = sampleLength.load();
             
-            // Check current position BEFORE rendering this buffer
-            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
-            
-            // Stop WELL BEFORE the end (200ms buffer) to absolutely prevent any looping
-            if (currentPos >= (actualDuration - 0.2f))
+            if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
             {
-                DBG("Stopping playback near end. Position: " + juce::String(currentPos, 3) + 
-                    ", Duration: " + juce::String(actualDuration, 3));
+                // Account for pitch: pitch changes the playback rate
+                float currentPitchValue = lastPitchValue;
+                float actualDuration = baseSampleLength / currentPitchValue;
                 
-                // Force stop immediately and prevent any retriggering
-                isNoteCurrentlyPlaying = false;
-                sampler.allNotesOff(1, true);
-                midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
-                lastNoteTriggered = -1;
-                samplesSinceNoteOn = 0;
-                playbackPosition.store(0.0f);
+                // Check current position BEFORE rendering this buffer
+                float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
                 
-                // CRITICAL: Clear any pending trigger to prevent loop restart
-                shouldTriggerNote.store(false);
+                // Stop WELL BEFORE the end (200ms buffer) to absolutely prevent any looping
+                if (currentPos >= (actualDuration - 0.2f))
+                {
+                    DBG("Stopping playback near end. Position: " + juce::String(currentPos, 3) +
+                        ", Duration: " + juce::String(actualDuration, 3));
+                    
+                    // Force stop immediately and prevent any retriggering
+                    isNoteCurrentlyPlaying = false;
+                    sampler.allNotesOff(1, true);
+                    midiMessages.addEvent(juce::MidiMessage::noteOff(1, lastNoteTriggered), 0);
+                    lastNoteTriggered = -1;
+                    samplesSinceNoteOn = 0;
+                    playbackPosition.store(0.0f);
+                    
+                    // CRITICAL: Clear any pending trigger to prevent loop restart
+                    shouldTriggerNote.store(false);
+                }
             }
         }
-    }
-    
-    // Render sampler output
-    sampler.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
-    
-    // Update playback position after rendering
-    if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
-    {
-        samplesSinceNoteOn += buffer.getNumSamples();
-        float baseSampleLength = sampleLength.load();
         
-        if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
+        // Render sampler output
+        sampler.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples());
+        
+        // Update playback position after rendering
+        if (lastNoteTriggered >= 0 && isNoteCurrentlyPlaying)
         {
-            float currentPitchValue = lastPitchValue;
-            float actualDuration = baseSampleLength / currentPitchValue;
-            float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
-            playbackPosition.store(currentPos);
+            samplesSinceNoteOn += buffer.getNumSamples();
+            float baseSampleLength = sampleLength.load();
+            
+            if (baseSampleLength > 0.0f && currentSampleRate > 0.0)
+            {
+                float currentPitchValue = lastPitchValue;
+                float actualDuration = baseSampleLength / currentPitchValue;
+                float currentPos = static_cast<float>(samplesSinceNoteOn) / static_cast<float>(currentSampleRate);
+                playbackPosition.store(currentPos);
+            }
         }
-    }
-    else if (lastNoteTriggered < 0)
-    {
-        playbackPosition.store(0.0f);
-        samplesSinceNoteOn = 0;
-    }
-    
-    // Update sample length tracking
-    if (sampler.getNumSounds() > 0)
-    {
-        auto* sound = dynamic_cast<juce::SamplerSound*>(sampler.getSound(0).get());
-        if (sound != nullptr)
+        else if (lastNoteTriggered < 0)
         {
-            sampleLength.store(static_cast<float>(sound->getAudioData()->getNumSamples()) / static_cast<float>(currentSampleRate));
+            playbackPosition.store(0.0f);
+            samplesSinceNoteOn = 0;
+        }
+        
+        // Update sample length tracking
+        if (sampler.getNumSounds() > 0)
+        {
+            auto* sound = dynamic_cast<juce::SamplerSound*>(sampler.getSound(0).get());
+            if (sound != nullptr)
+            {
+                sampleLength.store(static_cast<float>(sound->getAudioData()->getNumSamples()) / static_cast<float>(currentSampleRate));
+            }
         }
     }
     
