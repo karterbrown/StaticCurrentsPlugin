@@ -8,7 +8,9 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#if defined(_WIN32)
 #include <sapi.h>  // Windows Speech API
+#endif
 
 //==============================================================================
 StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEditor (StaticCurrentsPluginAudioProcessor& p)
@@ -136,16 +138,17 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
             return;
         }
 
+#if defined(_WIN32)
         // Use Windows SAPI for text-to-speech
         CoInitialize (nullptr);
         ISpVoice* pVoice = nullptr;
-        
+
         if (SUCCEEDED (CoCreateInstance (CLSID_SpVoice, nullptr, CLSCTX_ALL, IID_ISpVoice, (void**)&pVoice)))
         {
             // Create a temporary WAV file
             juce::File tempFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
                                        .getChildFile ("tts_temp.wav");
-            
+
             // Setup file stream
             ISpStream* pStream = nullptr;
             if (SUCCEEDED (CoCreateInstance (CLSID_SpStream, nullptr, CLSCTX_ALL, IID_ISpStream, (void**)&pStream)))
@@ -159,9 +162,9 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                 wfex.nBlockAlign = (wfex.nChannels * wfex.wBitsPerSample) / 8;
                 wfex.nAvgBytesPerSec = wfex.nSamplesPerSec * wfex.nBlockAlign;
                 wfex.cbSize = 0;
-                
+
                 GUID formatGuid = SPDFID_WaveFormatEx;
-                
+
                 if (SUCCEEDED (pStream->BindToFile (tempFile.getFullPathName().toWideCharPointer(),
                                                      SPFM_CREATE_ALWAYS,
                                                      &formatGuid,
@@ -170,9 +173,9 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                 {
                     pVoice->SetOutput (pStream, TRUE);
                     pVoice->Speak (text.toWideCharPointer(), SPF_DEFAULT, nullptr);
-                    
+
                     pStream->Release();
-                    
+
                     // Load the generated WAV file into the sampler
                     juce::MessageManager::callAsync ([this, tempFile]()
                     {
@@ -180,7 +183,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                         {
                             audioProcessor.loadSampleFromFile (tempFile);
                             fileLabel.setText (tempFile.getFileNameWithoutExtension(), juce::dontSendNotification);
-                            
+
                             // Clean up temp file after a delay
                             juce::Timer::callAfterDelay (1000, [tempFile]()
                             {
@@ -190,12 +193,17 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
                     });
                 }
             }
-            
+
             pVoice->Release();
         }
-        
+
         CoUninitialize();
         updateRecordButton();
+#else
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                 "Text-to-Speech",
+                                                 "Text-to-speech is only available on Windows.");
+#endif
     };
 
     // Setup jumble button
@@ -540,23 +548,31 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
     startTimer (50);
 
-    // Get the primary display's user area (excludes taskbar)
+    const int minWidth = 1500;
+    const int minHeight = 950;
+    const int preferredWidth = 1700;
+    const int preferredHeight = 1020;
+
+    // Size to a reasonable default without going full-screen.
     auto displays = juce::Desktop::getInstance().getDisplays();
     auto primaryDisplay = displays.getPrimaryDisplay();
     if (primaryDisplay != nullptr)
     {
         auto screenArea = primaryDisplay->userArea;
-        setBounds (screenArea);
+        setSize (juce::jmin (preferredWidth, screenArea.getWidth()),
+                 juce::jmin (preferredHeight, screenArea.getHeight()));
+        setResizeLimits (juce::jmin (minWidth, screenArea.getWidth()),
+                         juce::jmin (minHeight, screenArea.getHeight()),
+                         4800,
+                         3600);
     }
     else
     {
-        // Fallback if display detection fails
-        setSize (1000, 800);
+        setSize (preferredWidth, preferredHeight);
+        setResizeLimits (minWidth, minHeight, 4800, 3600);
     }
-    
+
     setResizable (true, true);
-    // Minimum size to prevent overlapping
-    setResizeLimits (950, 700, 4800, 3600);
 }
 
 StaticCurrentsPluginAudioProcessorEditor::~StaticCurrentsPluginAudioProcessorEditor()

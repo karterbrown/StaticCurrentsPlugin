@@ -1276,7 +1276,7 @@ void StaticCurrentsPluginAudioProcessor::stopRecording()
 void StaticCurrentsPluginAudioProcessor::loadSampleFromFile (const juce::File& file)
 {
     DBG("loadSampleFromFile called: " + file.getFullPathName());
-    DBG("File exists: " + juce::String(file.existsAsFile()) + ", Size: " + juce::String(file.getSize()));
+    DBG("File exists: " + juce::String(file.existsAsFile() ? "true" : "false") + ", Size: " + juce::String(file.getSize()));
     
     clearLoadedSample();
     auto* reader = formatManager.createReaderFor (file);
