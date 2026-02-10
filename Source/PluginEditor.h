@@ -72,8 +72,14 @@ private:
     juce::TextButton recordButton { "Record" };
     juce::TextButton bypassButton { "Bypass" };
     juce::TextButton playButton { "Play Sample" };
-    juce::TextButton generateButton { "Generate" };
+    juce::TextButton generateButton { "Generate" };  // TTS
+    juce::TextButton jumbleButton { "Jumble" };
+    juce::TextButton exportButton { "Export" };  // Export to file
     juce::Label fileLabel;
+    
+    // Text-to-speech text input
+    juce::TextEditor ttsTextEditor;
+    juce::Label ttsLabel { {}, "Text to Speech:" };
     
     juce::Slider progressSlider;
     juce::Label progressLabel { {}, "0:00" };

@@ -795,10 +795,10 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
                     float excess = peakDb - threshold;
                     gainReduction = excess * (1.0f - 1.0f / ratio);
                     
-                    // Add subtle FET-style harmonic saturation at high compression
+                    // Add FET-style harmonic saturation at high compression (more pronounced)
                     if (gainReduction > 10.0f)
                     {
-                        float satAmount = (gainReduction - 10.0f) * 0.02f;
+                        float satAmount = (gainReduction - 10.0f) * 0.05f;
                         gainReduction += satAmount * satAmount;
                     }
                 }
@@ -819,11 +819,11 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
             {
                 float sample = buffer.getSample (ch, i) * compGain;
                 
-                // Very subtle FET-style coloration (odd harmonics) when compressing
+                // FET-style coloration (odd harmonics) when compressing - more pronounced
                 if (compEnvelope > 3.0f)
                 {
-                    float colorAmount = juce::jmin(compEnvelope * 0.008f, 0.08f);
-                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.1f;
+                    float colorAmount = juce::jmin(compEnvelope * 0.02f, 0.15f);
+                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.2f;
                 }
                 
                 // NaN/Inf protection for compressor output
@@ -867,113 +867,42 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
         }
         else
         {
-            // Fallback saturation for non-Tube modes (legacy implementation)
-            float driveBoost = 1.0f;
-        float brightness = 1.0f;
-        float outputTrim = 1.0f;
-        float crushBoost = 1.0f;
-        float hissBoost = 1.0f;
-
-        switch (profile)
-        {
-            case 1: // Wax Cylinder - very compressed, dark, warm
-                driveBoost = 1.5f;
-                brightness = 0.65f;
-                crushBoost = 1.4f;
-                hissBoost = 1.3f;
-                outputTrim = 0.95f;
-                break;
-            case 2: // Vinyl - warm tape with hiss
-                driveBoost = 1.25f;
-                brightness = 0.80f;
-                crushBoost = 1.1f;
-                hissBoost = 1.35f;
-                outputTrim = 1.0f;
-                break;
-            case 3: // Cassette - tape with wow and hiss
-                driveBoost = 1.35f;
-                brightness = 0.75f;
-                crushBoost = 1.2f;
-                hissBoost = 1.5f;
-                outputTrim = 0.98f;
-                break;
-            case 4: // Reel to Reel - clean professional
-                driveBoost = 1.05f;
-                brightness = 0.98f;
-                crushBoost = 1.0f;
-                hissBoost = 0.7f;
-                outputTrim = 1.0f;
-                break;
-            case 5: // Neve - warm smooth console
-                driveBoost = 1.2f;
-                brightness = 0.92f;
-                crushBoost = 1.0f;
-                hissBoost = 0.8f;
-                outputTrim = 0.98f;
-                break;
-            case 6: // API - bright punchy console
-                driveBoost = 1.35f;
-                brightness = 1.1f;
-                crushBoost = 1.05f;
-                hissBoost = 0.85f;
-                outputTrim = 0.98f;
-                break;
-            case 7: // Blown Speaker - degraded broken
-                driveBoost = 2.3f;
-                brightness = 0.6f;
-                crushBoost = 1.5f;
-                hissBoost = 1.4f;
-                outputTrim = 0.7f;
-                break;
-            case 8: // HiFi - clean accurate
-                driveBoost = 1.01f;
-                brightness = 1.15f;
-                crushBoost = 1.0f;
-                hissBoost = 0.5f;
-                outputTrim = 1.05f;
-                break;
-            case 9: // LoFi - heavily degraded bitcrushed
-                driveBoost = 1.7f;
-                brightness = 0.68f;
-                crushBoost = 2.0f;
-                hissBoost = 1.3f;
-                outputTrim = 0.85f;
-                break;
-            default:
-                break;
-        }
-
-        if (satMix > 0.0f)
-        {
-            float tubeDriveVal = tubeDrive.load() * driveBoost;
-            float tubeWarmthVal = tubeWarmth.load();
-            float tubeBiasVal = tubeBias.load();
-            float tubeOutVal = tubeOutput.load();
-
-            float transistorDriveVal = transistorDrive.load() * driveBoost;
-            float transistorBiteVal = transistorBite.load();
-            float transistorClipVal = transistorClip.load();
-            float transistorOutVal = transistorOutput.load();
-
-            float tapeDriveVal = tapeDrive.load() * driveBoost;
-            float tapeWowVal = tapeWow.load();
-            float tapeHissVal = tapeHiss.load();
-            float tapeOutVal = tapeOutput.load();
-
-            float diodeDriveVal = diodeDrive.load() * driveBoost;
-            float diodeAsymVal = diodeAsym.load();
-            float diodeClipVal = diodeClip.load();
-            float diodeOutVal = diodeOutput.load();
-
-            float fuzzDriveVal = fuzzDrive.load() * driveBoost;
-            float fuzzGateVal = fuzzGate.load();
-            float fuzzToneVal = fuzzTone.load();
-            float fuzzOutVal = fuzzOutput.load();
-
-            float bitDepthVal = bitDepth.load();
-            float bitRateVal = bitRate.load();
-            float bitMixVal = bitMix.load();
-            float bitOutVal = bitOutput.load();
+            // Legacy saturation modes (Transistor, Tape, Diode, Fuzz, Bitcrusher)
+            // Read saturation parameters directly - NO profile-based modifiers
+            // This ensures manual parameter adjustments work correctly on ANY sample
+            
+            if (satMix > 0.0f)
+            {
+                // Read ALL saturation parameters directly from atomics without scaling
+                float tubeDriveVal = tubeDrive.load();
+                float tubeWarmthVal = tubeWarmth.load();
+                float tubeBiasVal = tubeBias.load();
+                float tubeOutVal = tubeOutput.load();
+    
+                float transistorDriveVal = transistorDrive.load();
+                float transistorBiteVal = transistorBite.load();
+                float transistorClipVal = transistorClip.load();
+                float transistorOutVal = transistorOutput.load();
+    
+                float tapeDriveVal = tapeDrive.load();
+                float tapeWowVal = tapeWow.load();
+                float tapeHissVal = tapeHiss.load();
+                float tapeOutVal = tapeOutput.load();
+    
+                float diodeDriveVal = diodeDrive.load();
+                float diodeAsymVal = diodeAsym.load();
+                float diodeClipVal = diodeClip.load();
+                float diodeOutVal = diodeOutput.load();
+    
+                float fuzzDriveVal = fuzzDrive.load();
+                float fuzzGateVal = fuzzGate.load();
+                float fuzzToneVal = fuzzTone.load();
+                float fuzzOutVal = fuzzOutput.load();
+    
+                float bitDepthVal = bitDepth.load();
+                float bitRateVal = bitRate.load();
+                float bitMixVal = bitMix.load();
+                float bitOutVal = bitOutput.load();
 
             const float wowRate = 0.2f + (tapeWowVal * 2.0f);
             const float wowInc = static_cast<float>((juce::MathConstants<double>::twoPi * wowRate) / currentSampleRate);
@@ -1032,62 +961,86 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
                     if (satType == 5) fuzzWeight *= focusBoost;
                     if (satType == 6) bitWeight *= focusBoost;
 
-                    float tubeDrive = 1.0f + tubeDriveVal * 0.9f;
-                    float tubeBias = tubeBiasVal * 0.25f;
-                    float tubeWarm = (0.6f + tubeWarmthVal * 1.2f) * brightness;
-                    float tubeDriven = (dry + tubeBias) * tubeDrive;
-                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.15f * tubeWarmthVal);
+                    // Input attenuation for hot saturation modes (like real analog gear)
+                    float preAtten = 0.7f;
+                    float dryScaled = dry * preAtten;
+
+                    float tubeDrive = 1.0f + tubeDriveVal * 0.6f;  // Increased for more extreme effect (max 7x)
+                    float tubeBias = tubeBiasVal * 0.5f;  // Doubled bias shift for more pronounced effect
+                    float tubeWarm = (0.6f + tubeWarmthVal * 2.0f);  // Increased warmth effect
+                    float tubeDriven = (dryScaled + tubeBias) * tubeDrive;
+                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.25f * tubeWarmthVal);  // More even harmonics
                     float tubeSat = std::tanh ((tubeDriven + tubeEven) * tubeWarm);
                     float tubeComp = 1.0f / (1.0f + std::abs (tubeSat) * 0.6f);
-                    float tubeOut = tubeSat * tubeComp * tubeOutVal * outputTrim;
+                    float tubeOut = tubeSat * tubeComp * tubeOutVal / preAtten;  // Compensate attenuation
 
-                    float transDrive = 1.0f + transistorDriveVal * 1.1f;
+                    float transDrive = 1.0f + transistorDriveVal * 0.6f;  // Increased for more extreme effect (max 7x)
                     float transBite = juce::jlimit (0.0f, 1.0f, transistorBiteVal);
                     float transClip = 0.9f - (transistorClipVal * 0.7f);
-                    float transDriven = dry * transDrive;
+                    float transDriven = dryScaled * transDrive;
                     float transClipped = juce::jlimit (-transClip, transClip, transDriven);
-                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 2.0f));
+                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 4.0f));  // More aggressive bite effect
                     float transHard = transClipped / transClip;
                     float transSat = juce::jlimit (-1.0f, 1.0f, transSoft * (1.0f - transBite) + transHard * transBite);
-                    float transOut = transSat * transistorOutVal * outputTrim;
+                    
+                    // Add crossover distortion (transistor characteristic)
+                    float crossover = transSat * 0.05f * (1.0f - std::abs(transSat));  // More pronounced crossover
+                    transSat += crossover * transBite;
+                    
+                    float transOut = transSat * transistorOutVal / preAtten;  // Compensate attenuation
 
                     tapeWowPhase += wowInc;
                     if (tapeWowPhase > juce::MathConstants<double>::twoPi)
                         tapeWowPhase -= juce::MathConstants<double>::twoPi;
 
-                    float wowMod = 1.0f + std::sin (static_cast<float>(tapeWowPhase)) * tapeWowVal * 0.02f;
-                    float tapeDrive = 1.0f + tapeDriveVal * 0.7f * wowMod;
-                    float tapeDriven = dry * tapeDrive;
+                    float wowMod = 1.0f + std::sin (static_cast<float>(tapeWowPhase)) * tapeWowVal * 0.05f;  // More wow/flutter
+                    float tapeDrive = 1.0f + tapeDriveVal * 1.0f * wowMod;  // Increased drive (max 11x)
+                    float tapeDriven = dryScaled * tapeDrive;
                     float tapeComp = tapeDriven / (1.0f + std::abs (tapeDriven) * 0.7f);
-                    float tapeSat = std::tanh (tapeComp * (1.0f + brightness * 0.12f));
-                    float tapeLoss = 1.0f - tapeHissVal * 0.35f;
-                    float tapeOut = tapeSat * tapeLoss * tapeOutVal * outputTrim;
+                    float tapeSat = std::tanh (tapeComp * 1.12f);
+                    float tapeLoss = 1.0f - tapeHissVal * 0.6f;  // More pronounced hiss/loss
+                    float tapeOut = tapeSat * tapeLoss * tapeOutVal / preAtten;  // Compensate attenuation
 
-                    float diodeDrive = 1.0f + diodeDriveVal * 1.2f;
+                    float diodeDrive = 1.0f + diodeDriveVal * 0.7f;  // Increased for more extreme effect (max 8x) (max 4.5x instead of 13x)
                     float diodeAsym = juce::jlimit (0.0f, 1.0f, diodeAsymVal);
                     float diodeClip = 0.95f - (diodeClipVal * 0.75f);
-                    float diodeDriven = dry * diodeDrive;
+                    float diodeDriven = dryScaled * diodeDrive;
                     float diodeClipped = juce::jlimit (-diodeClip, diodeClip, diodeDriven);
                     float diodeRect = (1.0f - diodeAsym) * diodeClipped + diodeAsym * std::abs (diodeClipped);
-                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 1.1f)) * brightness;
-                    float diodeOut = diodeSat * diodeOutVal * outputTrim;
+                    
+                    // Forward voltage drop simulation (0.6V diode characteristic)
+                    float fwdDrop = 0.6f / 10.0f;  // Normalized
+                    if (diodeRect > fwdDrop)
+                        diodeRect = diodeRect - fwdDrop;
+                    else if (diodeRect < -fwdDrop)
+                        diodeRect = diodeRect + fwdDrop;
+                    else
+                        diodeRect = 0.0f;
+                    
+                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 2.0f));  // More harmonic distortion
+                    float diodeOut = diodeSat * diodeOutVal / preAtten;  // Compensate attenuation
 
-                    float fuzzDrive = 1.0f + fuzzDriveVal * 1.6f;
-                    float fuzzGate = fuzzGateVal * 0.05f;
+                    float fuzzDrive = 1.0f + fuzzDriveVal * 0.7f;  // Increased for more extreme effect (max 8x) (max 5x instead of 17x) - CRITICAL FIX
+                    float fuzzGate = fuzzGateVal * 0.12f;  // More aggressive gating
                     float fuzzTone = juce::jlimit (0.0f, 1.0f, fuzzToneVal);
-                    float fuzzDriven = dry * fuzzDrive;
+                    float fuzzDriven = dryScaled * fuzzDrive;
                     float fuzzed = juce::jlimit (-1.0f, 1.0f, fuzzDriven);
                     if (std::abs (fuzzed) < fuzzGate)
                         fuzzed *= std::abs (fuzzed) / juce::jmax (0.001f, fuzzGate);
-                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.35f;
+                    
+                    // Add octave-up effect (fuzz characteristic - frequency doubling)
+                    float octaveUp = std::abs(fuzzed) * fuzzed * 0.25f;  // More octave-up harmonics
+                    fuzzed = fuzzed * 0.75f + octaveUp;  // Adjusted mix for stronger effect
+                    
+                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.6f;  // More extreme tone shaping
                     fuzzState += fuzzAlpha * (fuzzed - fuzzState);
-                    float fuzzOut = fuzzState * fuzzOutVal * outputTrim;
+                    float fuzzOut = fuzzState * fuzzOutVal / preAtten;  // Compensate attenuation
 
-                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal - (crushBoost - 1.0f) * 2.0f)));
-                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal * crushBoost)));
+                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal)));
+                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal)));
                     float step = 2.0f / static_cast<float> (1 << bits);
 
-                    float crushSample = dry;
+                    float crushSample = dryScaled;
                     if (rate > 1)
                     {
                         if (crushCounter <= 0)
@@ -1104,7 +1057,7 @@ void StaticCurrentsPluginAudioProcessor::processBlock (juce::AudioBuffer<float>&
 
                     float quant = std::floor (crushSample / step) * step;
                     float bitWet = juce::jlimit (0.0f, 1.0f, bitMixVal);
-                    float bitOut = (dry * (1.0f - bitWet) + quant * bitWet) * bitOutVal * outputTrim;
+                    float bitOut = (dryScaled * (1.0f - bitWet) + quant * bitWet) * bitOutVal / preAtten;  // Compensate attenuation
 
                     float weightSum = tubeWeight + transistorWeight + tapeWeight + diodeWeight + fuzzWeight + bitWeight;
                     if (weightSum < 0.0001f)
@@ -1302,6 +1255,7 @@ void StaticCurrentsPluginAudioProcessor::stopRecording()
         if (lastRecordingFile.existsAsFile() && lastRecordingFile.getSize() > 0)
         {
             DBG("WAV file created successfully, size: " + juce::String(lastRecordingFile.getSize()) + " bytes");
+            originalRecordingFile = lastRecordingFile; // Save as the original recording
             loadSampleFromFile (lastRecordingFile);
         }
         else
@@ -1409,48 +1363,30 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
         int satType = static_cast<int>(saturationType.load());
         int profile = static_cast<int>(profileType.load());
 
-        float driveBoost = 1.0f;
-        float brightness = 1.0f;
-        float outputTrim = 1.0f;
-        float crushBoost = 1.0f;
-
-        switch (profile)
-        {
-            case 1: driveBoost = 1.5f; brightness = 0.65f; crushBoost = 1.4f; outputTrim = 0.95f; break;
-            case 2: driveBoost = 1.25f; brightness = 0.80f; crushBoost = 1.1f; outputTrim = 1.0f; break;
-            case 3: driveBoost = 1.35f; brightness = 0.75f; crushBoost = 1.2f; outputTrim = 0.98f; break;
-            case 4: driveBoost = 1.05f; brightness = 0.98f; crushBoost = 1.0f; outputTrim = 1.0f; break;
-            case 5: driveBoost = 1.2f; brightness = 0.92f; crushBoost = 1.0f; outputTrim = 0.98f; break;
-            case 6: driveBoost = 1.35f; brightness = 1.1f; crushBoost = 1.05f; outputTrim = 0.98f; break;
-            case 7: driveBoost = 2.3f; brightness = 0.6f; crushBoost = 1.5f; outputTrim = 0.7f; break;
-            case 8: driveBoost = 1.01f; brightness = 1.15f; crushBoost = 1.0f; outputTrim = 1.05f; break;
-            case 9: driveBoost = 1.7f; brightness = 0.68f; crushBoost = 2.0f; outputTrim = 0.85f; break;
-            default: break;
-        }
-
+        // Profile scaling removed - presets only set parameter values, no runtime scaling
         if (satMix > 0.0f)
         {
-            float tubeDriveVal = tubeDrive.load() * driveBoost;
+            float tubeDriveVal = tubeDrive.load();
             float tubeWarmthVal = tubeWarmth.load();
             float tubeBiasVal = tubeBias.load();
             float tubeOutVal = tubeOutput.load();
 
-            float transistorDriveVal = transistorDrive.load() * driveBoost;
+            float transistorDriveVal = transistorDrive.load();
             float transistorBiteVal = transistorBite.load();
             float transistorClipVal = transistorClip.load();
             float transistorOutVal = transistorOutput.load();
 
-            float tapeDriveVal = tapeDrive.load() * driveBoost;
+            float tapeDriveVal = tapeDrive.load();
             float tapeWowVal = tapeWow.load();
             float tapeHissVal = tapeHiss.load();
             float tapeOutVal = tapeOutput.load();
 
-            float diodeDriveVal = diodeDrive.load() * driveBoost;
+            float diodeDriveVal = diodeDrive.load();
             float diodeAsymVal = diodeAsym.load();
             float diodeClipVal = diodeClip.load();
             float diodeOutVal = diodeOutput.load();
 
-            float fuzzDriveVal = fuzzDrive.load() * driveBoost;
+            float fuzzDriveVal = fuzzDrive.load();
             float fuzzGateVal = fuzzGate.load();
             float fuzzToneVal = fuzzTone.load();
             float fuzzOutVal = fuzzOutput.load();
@@ -1524,62 +1460,86 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
                     if (satType == 5) fuzzWeight *= focusBoost;
                     if (satType == 6) bitWeight *= focusBoost;
 
-                    float tubeDrive = 1.0f + tubeDriveVal * 0.9f;
-                    float tubeBias = tubeBiasVal * 0.25f;
-                    float tubeWarm = (0.6f + tubeWarmthVal * 1.2f) * brightness;
-                    float tubeDriven = (dry + tubeBias) * tubeDrive;
-                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.15f * tubeWarmthVal);
+                    // Input attenuation for hot saturation modes (like real analog gear)
+                    float preAtten = 0.7f;
+                    float dryScaled = dry * preAtten;
+
+                    float tubeDrive = 1.0f + tubeDriveVal * 0.6f;  // Increased for more extreme effect (max 7x)
+                    float tubeBias = tubeBiasVal * 0.5f;  // Doubled bias shift for more pronounced effect
+                    float tubeWarm = (0.6f + tubeWarmthVal * 2.0f);  // Increased warmth effect
+                    float tubeDriven = (dryScaled + tubeBias) * tubeDrive;
+                    float tubeEven = std::abs (tubeDriven) * tubeDriven * (0.25f * tubeWarmthVal);  // More even harmonics
                     float tubeSat = std::tanh ((tubeDriven + tubeEven) * tubeWarm);
                     float tubeComp = 1.0f / (1.0f + std::abs (tubeSat) * 0.6f);
-                    float tubeOut = tubeSat * tubeComp * tubeOutVal * outputTrim;
+                    float tubeOut = tubeSat * tubeComp * tubeOutVal / preAtten;  // Compensate attenuation
 
-                    float transDrive = 1.0f + transistorDriveVal * 1.1f;
+                    float transDrive = 1.0f + transistorDriveVal * 0.6f;  // Increased for more extreme effect (max 7x)
                     float transBite = juce::jlimit (0.0f, 1.0f, transistorBiteVal);
                     float transClip = 0.9f - (transistorClipVal * 0.7f);
-                    float transDriven = dry * transDrive;
+                    float transDriven = dryScaled * transDrive;
                     float transClipped = juce::jlimit (-transClip, transClip, transDriven);
-                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 2.0f));
+                    float transSoft = std::tanh (transClipped * (1.0f + transBite * 4.0f));  // More aggressive bite effect
                     float transHard = transClipped / transClip;
                     float transSat = juce::jlimit (-1.0f, 1.0f, transSoft * (1.0f - transBite) + transHard * transBite);
-                    float transOut = transSat * transistorOutVal * outputTrim;
+                    
+                    // Add crossover distortion (transistor characteristic)
+                    float crossover = transSat * 0.05f * (1.0f - std::abs(transSat));  // More pronounced crossover
+                    transSat += crossover * transBite;
+                    
+                    float transOut = transSat * transistorOutVal / preAtten;  // Compensate attenuation
 
                     wowPhase += wowInc;
                     if (wowPhase > juce::MathConstants<double>::twoPi)
                         wowPhase -= juce::MathConstants<double>::twoPi;
 
-                    float wowMod = 1.0f + std::sin (static_cast<float>(wowPhase)) * tapeWowVal * 0.02f;
-                    float tapeDrive = 1.0f + tapeDriveVal * 0.7f * wowMod;
-                    float tapeDriven = dry * tapeDrive;
+                    float wowMod = 1.0f + std::sin (static_cast<float>(wowPhase)) * tapeWowVal * 0.05f;  // More wow/flutter
+                    float tapeDrive = 1.0f + tapeDriveVal * 1.0f * wowMod;  // Increased drive (max 11x)
+                    float tapeDriven = dryScaled * tapeDrive;
                     float tapeComp = tapeDriven / (1.0f + std::abs (tapeDriven) * 0.7f);
-                    float tapeSat = std::tanh (tapeComp * (1.0f + brightness * 0.12f));
-                    float tapeLoss = 1.0f - tapeHissVal * 0.35f;
-                    float tapeOut = tapeSat * tapeLoss * tapeOutVal * outputTrim;
+                    float tapeSat = std::tanh (tapeComp * 1.12f);
+                    float tapeLoss = 1.0f - tapeHissVal * 0.6f;  // More pronounced hiss/loss
+                    float tapeOut = tapeSat * tapeLoss * tapeOutVal / preAtten;  // Compensate attenuation
 
-                    float diodeDrive = 1.0f + diodeDriveVal * 1.2f;
+                    float diodeDrive = 1.0f + diodeDriveVal * 0.7f;  // Increased for more extreme effect (max 8x) (max 4.5x instead of 13x)
                     float diodeAsym = juce::jlimit (0.0f, 1.0f, diodeAsymVal);
                     float diodeClip = 0.95f - (diodeClipVal * 0.75f);
-                    float diodeDriven = dry * diodeDrive;
+                    float diodeDriven = dryScaled * diodeDrive;
                     float diodeClipped = juce::jlimit (-diodeClip, diodeClip, diodeDriven);
                     float diodeRect = (1.0f - diodeAsym) * diodeClipped + diodeAsym * std::abs (diodeClipped);
-                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 1.1f)) * brightness;
-                    float diodeOut = diodeSat * diodeOutVal * outputTrim;
+                    
+                    // Forward voltage drop simulation (0.6V diode characteristic)
+                    float fwdDrop = 0.6f / 10.0f;  // Normalized
+                    if (diodeRect > fwdDrop)
+                        diodeRect = diodeRect - fwdDrop;
+                    else if (diodeRect < -fwdDrop)
+                        diodeRect = diodeRect + fwdDrop;
+                    else
+                        diodeRect = 0.0f;
+                    
+                    float diodeSat = std::tanh (diodeRect * (1.2f + diodeClipVal * 2.0f));  // More harmonic distortion
+                    float diodeOut = diodeSat * diodeOutVal / preAtten;  // Compensate attenuation
 
-                    float fuzzDrive = 1.0f + fuzzDriveVal * 1.6f;
-                    float fuzzGate = fuzzGateVal * 0.05f;
+                    float fuzzDrive = 1.0f + fuzzDriveVal * 0.7f;  // Increased for more extreme effect (max 8x) (max 5x instead of 17x) - CRITICAL FIX
+                    float fuzzGate = fuzzGateVal * 0.12f;  // More aggressive gating
                     float fuzzTone = juce::jlimit (0.0f, 1.0f, fuzzToneVal);
-                    float fuzzDriven = dry * fuzzDrive;
+                    float fuzzDriven = dryScaled * fuzzDrive;
                     float fuzzed = juce::jlimit (-1.0f, 1.0f, fuzzDriven);
                     if (std::abs (fuzzed) < fuzzGate)
                         fuzzed *= std::abs (fuzzed) / juce::jmax (0.001f, fuzzGate);
-                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.35f;
+                    
+                    // Add octave-up effect (fuzz characteristic - frequency doubling)
+                    float octaveUp = std::abs(fuzzed) * fuzzed * 0.25f;  // More octave-up harmonics
+                    fuzzed = fuzzed * 0.75f + octaveUp;  // Adjusted mix for stronger effect
+                    
+                    float fuzzAlpha = 0.08f + (1.0f - fuzzTone) * 0.6f;  // More extreme tone shaping
                     fuzzState += fuzzAlpha * (fuzzed - fuzzState);
-                    float fuzzOut = fuzzState * fuzzOutVal * outputTrim;
+                    float fuzzOut = fuzzState * fuzzOutVal / preAtten;  // Compensate attenuation
 
-                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal - (crushBoost - 1.0f) * 2.0f)));
-                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal * crushBoost)));
+                    int bits = juce::jlimit (2, 16, static_cast<int>(std::round (bitDepthVal)));
+                    int rate = juce::jlimit (1, 16, static_cast<int>(std::round (bitRateVal)));
                     float step = 2.0f / static_cast<float> (1 << bits);
 
-                    float crushSample = dry;
+                    float crushSample = dryScaled;
                     if (rate > 1)
                     {
                         if (crushCounter <= 0)
@@ -1596,7 +1556,7 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
 
                     float quant = std::floor (crushSample / step) * step;
                     float bitWet = juce::jlimit (0.0f, 1.0f, bitMixVal);
-                    float bitOut = (dry * (1.0f - bitWet) + quant * bitWet) * bitOutVal * outputTrim;
+                    float bitOut = (dryScaled * (1.0f - bitWet) + quant * bitWet) * bitOutVal / preAtten;  // Compensate attenuation
 
                     float weightSum = tubeWeight + transistorWeight + tapeWeight + diodeWeight + fuzzWeight + bitWeight;
                     if (weightSum < 0.0001f)
@@ -1727,7 +1687,7 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
                     
                     if (gainReduction > 10.0f)
                     {
-                        float satAmount = (gainReduction - 10.0f) * 0.02f;
+                        float satAmount = (gainReduction - 10.0f) * 0.05f;
                         gainReduction += satAmount * satAmount;
                     }
                 }
@@ -1745,7 +1705,7 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
                 if (envelope > 3.0f)
                 {
                     float colorAmount = juce::jmin(envelope * 0.008f, 0.08f);
-                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.1f;
+                    sample = sample + colorAmount * std::tanh(sample * 3.0f) * 0.2f;
                 }
                 
                 processedBuffer.setSample(ch, i, sample);
@@ -1822,3 +1782,216 @@ void StaticCurrentsPluginAudioProcessor::exportProcessedSample(const juce::File&
         }
     }
 }
+
+void StaticCurrentsPluginAudioProcessor::jumbleSample()
+{
+    // Get the current sample from the sampler
+    if (sampler.getNumSounds() == 0)
+    {
+        DBG("No sample loaded to jumble!");
+        return;
+    }
+    
+    auto* samplerSound = dynamic_cast<juce::SamplerSound*>(sampler.getSound(0).get());
+    if (samplerSound == nullptr)
+        return;
+    
+    auto* audioData = samplerSound->getAudioData();
+    int numChannels = audioData->getNumChannels();
+    int numSamples = audioData->getNumSamples();
+    
+    if (numSamples < 1000)  // Need at least some minimum length
+    {
+        DBG("Sample too short to jumble!");
+        return;
+    }
+    
+    // Calculate crossfade length (0.005 seconds - just enough to prevent clicks)
+    int crossfadeLength = static_cast<int>(0.005 * currentSampleRate);
+    
+    // Generate many rapid cuts (between 40 and 100 for fast gibberish)
+    juce::Random random;
+    int numCuts = random.nextInt(juce::Range<int>(40, 101));
+    
+    // Calculate slice length
+    int sliceLength = numSamples / numCuts;
+    
+    // Create slices
+    struct Slice
+    {
+        int startSample;
+        int length;
+        float speedFactor;  // 0.5 = half speed, 1.0 = normal, 2.0 = double speed
+        bool reverse;
+    };
+    
+    std::vector<Slice> slices;
+    int currentPos = 0;
+    
+    for (int i = 0; i < numCuts && currentPos < numSamples; ++i)
+    {
+        Slice slice;
+        slice.startSample = currentPos;
+        
+        // Vary slice length by ±20% (tighter variation for consistent rapid cuts)
+        int variance = static_cast<int>(sliceLength * 0.2f);
+        slice.length = sliceLength + random.nextInt(juce::Range<int>(-variance, variance + 1));
+        slice.length = juce::jlimit(crossfadeLength * 2, numSamples - currentPos, slice.length);
+        
+        // Random speed: 30% normal, 35% slightly slow (0.7-0.95x), 35% slightly fast (1.05-1.5x)
+        // Tighter range for more intelligible but still garbled speech
+        float speedChoice = random.nextFloat();
+        if (speedChoice < 0.3f)
+            slice.speedFactor = 1.0f;  // Normal speed
+        else if (speedChoice < 0.65f)
+            slice.speedFactor = 0.7f + random.nextFloat() * 0.25f;  // Slightly slow (0.7-0.95x)
+        else
+            slice.speedFactor = 1.05f + random.nextFloat() * 0.45f;  // Slightly fast (1.05-1.5x)
+        
+        // 40% chance of reverse (more chaos)
+        slice.reverse = random.nextFloat() < 0.4f;
+        
+        slices.push_back(slice);
+        currentPos += slice.length;
+    }
+    
+    // Shuffle the slices (Fisher-Yates shuffle with JUCE Random)
+    juce::Random rng;
+    for (int i = slices.size() - 1; i > 0; --i)
+    {
+        int j = rng.nextInt(i + 1);
+        std::swap(slices[i], slices[j]);
+    }
+    
+    // Estimate new buffer size (accounting for speed changes)
+    int estimatedLength = 0;
+    for (const auto& slice : slices)
+    {
+        estimatedLength += static_cast<int>(slice.length / slice.speedFactor) + crossfadeLength;
+    }
+    
+    // Create jumbled buffer
+    juce::AudioBuffer<float> jumbledBuffer(numChannels, estimatedLength);
+    jumbledBuffer.clear();
+    
+    int writePos = 0;
+    
+    for (size_t i = 0; i < slices.size(); ++i)
+    {
+        const auto& slice = slices[i];
+        
+        // Calculate resampled length
+        int resampledLength = static_cast<int>(slice.length / slice.speedFactor);
+        
+        // Create temporary buffer for this slice
+        juce::AudioBuffer<float> sliceBuffer(numChannels, resampledLength);
+        
+        // Copy and process slice
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            // Resample the slice
+            for (int sampleIdx = 0; sampleIdx < resampledLength; ++sampleIdx)
+            {
+                float sourcePos = sampleIdx * slice.speedFactor;
+                int sourceSample = slice.startSample + static_cast<int>(sourcePos);
+                
+                // Linear interpolation
+                if (sourceSample < numSamples - 1)
+                {
+                    float frac = sourcePos - std::floor(sourcePos);
+                    float sample1 = audioData->getSample(ch, sourceSample);
+                    float sample2 = audioData->getSample(ch, sourceSample + 1);
+                    float interpolated = sample1 + frac * (sample2 - sample1);
+                    
+                    int writeIdx = slice.reverse ? (resampledLength - 1 - sampleIdx) : sampleIdx;
+                    sliceBuffer.setSample(ch, writeIdx, interpolated);
+                }
+            }
+        }
+        
+        // Add slice to jumbled buffer with crossfade
+        int copyLength = juce::jmin(resampledLength, estimatedLength - writePos);
+        
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            // If not first slice, apply crossfade
+            if (i > 0 && writePos >= crossfadeLength)
+            {
+                // Fade out previous slice
+                for (int j = 0; j < crossfadeLength && (writePos - crossfadeLength + j) < estimatedLength; ++j)
+                {
+                    float fadeOut = 1.0f - (j / static_cast<float>(crossfadeLength));
+                    float existingSample = jumbledBuffer.getSample(ch, writePos - crossfadeLength + j);
+                    jumbledBuffer.setSample(ch, writePos - crossfadeLength + j, existingSample * fadeOut);
+                }
+                
+                // Fade in current slice
+                for (int j = 0; j < crossfadeLength && j < copyLength; ++j)
+                {
+                    float fadeIn = j / static_cast<float>(crossfadeLength);
+                    float newSample = sliceBuffer.getSample(ch, j);
+                    float existingSample = jumbledBuffer.getSample(ch, writePos - crossfadeLength + j);
+                    jumbledBuffer.setSample(ch, writePos - crossfadeLength + j, existingSample + newSample * fadeIn);
+                }
+                
+                // Copy rest of slice without crossfade
+                for (int j = crossfadeLength; j < copyLength; ++j)
+                {
+                    if (writePos + j - crossfadeLength < estimatedLength)
+                        jumbledBuffer.setSample(ch, writePos + j - crossfadeLength, sliceBuffer.getSample(ch, j));
+                }
+            }
+            else
+            {
+                // First slice or no room for crossfade - just copy
+                for (int j = 0; j < copyLength && (writePos + j) < estimatedLength; ++j)
+                {
+                    jumbledBuffer.setSample(ch, writePos + j, sliceBuffer.getSample(ch, j));
+                }
+            }
+        }
+        
+        writePos += (i > 0) ? (copyLength - crossfadeLength) : copyLength;
+    }
+    
+    // Trim to actual length
+    int actualLength = juce::jmin(writePos, estimatedLength);
+    juce::AudioBuffer<float> finalBuffer(numChannels, actualLength);
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        finalBuffer.copyFrom(ch, 0, jumbledBuffer, ch, 0, actualLength);
+    }
+    
+    // Save jumbled sample to temporary file
+    auto tempFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                    .getChildFile("StaticCurrentsPlugin_jumbled_" + 
+                                  juce::String(juce::Time::getCurrentTime().toMilliseconds()) + 
+                                  ".wav");
+    
+    // Write to file
+    juce::WavAudioFormat wavFormat;
+    std::unique_ptr<juce::FileOutputStream> outputStream(new juce::FileOutputStream(tempFile));
+    
+    if (outputStream->openedOk())
+    {
+        outputStream->setPosition(0);
+        outputStream->truncate();
+        
+        auto numChannels = static_cast<unsigned int>(finalBuffer.getNumChannels());
+        juce::StringPairArray metadata;
+        std::unique_ptr<juce::AudioFormatWriter> writer(
+            wavFormat.createWriterFor(outputStream.get(), currentSampleRate, numChannels, 24, metadata, 0));
+        
+        if (writer != nullptr)
+        {
+            outputStream.release();  // Writer takes ownership
+            writer->writeFromAudioSampleBuffer(finalBuffer, 0, actualLength);
+            writer->flush();
+            
+            // Load jumbled sample back into sampler
+            loadSampleFromFile(tempFile);
+            DBG("Sample jumbled successfully! " + juce::String(slices.size()) + " slices, final length: " + juce::String(actualLength / currentSampleRate, 2) + "s");
+        }
+    }
+}
+

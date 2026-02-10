@@ -76,6 +76,9 @@ public:
     float getSampleLength() const { return sampleLength.load(); }
     void setPlaybackPosition(float pos) { seekPosition.store(pos); }
     
+    // Jumbler functionality
+    void jumbleSample();
+    
     // Parameter access
     std::atomic<float>* getGainParameter() { return &gain; }
     std::atomic<float>* getPitchParameter() { return &pitch; }
@@ -145,6 +148,9 @@ public:
     std::atomic<bool>* getBypassParameter() { return &bypass; }    
     // Preset application
     void applyProfilePreset(int profileID);
+    
+    // Get original recording file for reset functionality
+    juce::File getOriginalRecordingFile() const { return originalRecordingFile; }
 private:
   void clearLoadedSample();
   juce::File createRecordingTempFile() const;
@@ -159,6 +165,7 @@ private:
     int recordPosition = 0;
     double recordSampleRate = 44100.0;
     juce::File lastRecordingFile;
+    juce::File originalRecordingFile; // Tracks the last recorded sample (not jumbled/loaded)
     bool clearedOnStart = false;
     
     // Parameters

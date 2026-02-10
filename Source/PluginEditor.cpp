@@ -8,6 +8,7 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <sapi.h>  // Windows Speech API
 
 //==============================================================================
 StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEditor (StaticCurrentsPluginAudioProcessor& p)
@@ -110,9 +111,104 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         }
     };
 
-    // Setup generate button
+    // Setup TTS text editor
+    addAndMakeVisible (ttsTextEditor);
+    ttsTextEditor.setMultiLine (true);
+    ttsTextEditor.setReturnKeyStartsNewLine (true);
+    ttsTextEditor.setScrollbarsShown (true);
+    ttsTextEditor.setCaretVisible (true);
+    ttsTextEditor.setPopupMenuEnabled (true);
+    ttsTextEditor.setText ("Enter text here to convert to speech...");
+    
+    addAndMakeVisible (ttsLabel);
+
+    // Setup TTS generate button (text-to-speech)
     addAndMakeVisible (generateButton);
     generateButton.onClick = [this]
+    {
+        // Get text from editor
+        juce::String text = ttsTextEditor.getText();
+        if (text.isEmpty() || text == "Enter text here to convert to speech...")
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                     "No Text",
+                                                     "Please enter some text to convert to speech.");
+            return;
+        }
+
+        // Use Windows SAPI for text-to-speech
+        CoInitialize (nullptr);
+        ISpVoice* pVoice = nullptr;
+        
+        if (SUCCEEDED (CoCreateInstance (CLSID_SpVoice, nullptr, CLSCTX_ALL, IID_ISpVoice, (void**)&pVoice)))
+        {
+            // Create a temporary WAV file
+            juce::File tempFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                       .getChildFile ("tts_temp.wav");
+            
+            // Setup file stream
+            ISpStream* pStream = nullptr;
+            if (SUCCEEDED (CoCreateInstance (CLSID_SpStream, nullptr, CLSCTX_ALL, IID_ISpStream, (void**)&pStream)))
+            {
+                // Setup wave format manually (44kHz, 16-bit, mono)
+                WAVEFORMATEX wfex;
+                wfex.wFormatTag = WAVE_FORMAT_PCM;
+                wfex.nChannels = 1;
+                wfex.nSamplesPerSec = 44100;
+                wfex.wBitsPerSample = 16;
+                wfex.nBlockAlign = (wfex.nChannels * wfex.wBitsPerSample) / 8;
+                wfex.nAvgBytesPerSec = wfex.nSamplesPerSec * wfex.nBlockAlign;
+                wfex.cbSize = 0;
+                
+                GUID formatGuid = SPDFID_WaveFormatEx;
+                
+                if (SUCCEEDED (pStream->BindToFile (tempFile.getFullPathName().toWideCharPointer(),
+                                                     SPFM_CREATE_ALWAYS,
+                                                     &formatGuid,
+                                                     &wfex,
+                                                     SPFEI_ALL_EVENTS)))
+                {
+                    pVoice->SetOutput (pStream, TRUE);
+                    pVoice->Speak (text.toWideCharPointer(), SPF_DEFAULT, nullptr);
+                    
+                    pStream->Release();
+                    
+                    // Load the generated WAV file into the sampler
+                    juce::MessageManager::callAsync ([this, tempFile]()
+                    {
+                        if (tempFile.existsAsFile())
+                        {
+                            audioProcessor.loadSampleFromFile (tempFile);
+                            fileLabel.setText (tempFile.getFileNameWithoutExtension(), juce::dontSendNotification);
+                            
+                            // Clean up temp file after a delay
+                            juce::Timer::callAfterDelay (1000, [tempFile]()
+                            {
+                                tempFile.deleteFile();
+                            });
+                        }
+                    });
+                }
+            }
+            
+            pVoice->Release();
+        }
+        
+        CoUninitialize();
+        updateRecordButton();
+    };
+
+    // Setup jumble button
+    addAndMakeVisible (jumbleButton);
+    jumbleButton.onClick = [this]
+    {
+        audioProcessor.jumbleSample();
+        updateRecordButton();
+    };
+
+    // Setup export button (formerly generate - export to file)
+    addAndMakeVisible (exportButton);
+    exportButton.onClick = [this]
     {
         juce::PopupMenu formatMenu;
         formatMenu.addItem (1, "WAV (24-bit)");
@@ -154,7 +250,6 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
             });
         });
     };
-
     // Setup progress slider
     addAndMakeVisible (progressSlider);
     addAndMakeVisible (progressLabel);
@@ -175,7 +270,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     // Basic parameters
     addAndMakeVisible (gainSlider);
     addAndMakeVisible (gainLabel);
-    gainSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    gainSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     gainSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     gainSlider.setRange (0.0, 1.0, 0.01);
     gainSlider.setValue (0.7);
@@ -183,12 +278,22 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
 
     addAndMakeVisible (pitchSlider);
     addAndMakeVisible (pitchLabel);
-    pitchSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    pitchSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     pitchSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     pitchSlider.setRange (0.5, 2.0, 0.01);
     pitchSlider.setValue (1.0);
     pitchSlider.setTextValueSuffix (" x");
     pitchSlider.onValueChange = [this] { *audioProcessor.getPitchParameter() = static_cast<float> (pitchSlider.getValue()); };
+
+    // Global Output Slider
+    addAndMakeVisible (globalOutputSlider);
+    addAndMakeVisible (globalOutputLabel);
+    globalOutputSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    globalOutputSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
+    globalOutputSlider.setRange (-24.0, 6.0, 0.1);
+    globalOutputSlider.setValue (0.0);
+    globalOutputSlider.setTextValueSuffix (" dB");
+    globalOutputSlider.onValueChange = [this] { *audioProcessor.getGlobalOutputParameter() = static_cast<float> (globalOutputSlider.getValue()); };
 
     // Profile selector (items are initialized on first resized)
     addAndMakeVisible (profileBox);
@@ -259,6 +364,13 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
         profileBox.setSelectedId (1, juce::dontSendNotification);
         syncSlidersFromParameters();
         updateEQVisualization();
+        
+        // Reload the original recorded sample if it exists
+        if (audioProcessor.getOriginalRecordingFile().existsAsFile())
+        {
+            audioProcessor.loadSampleFromFile(audioProcessor.getOriginalRecordingFile());
+            DBG("Reset: Reloaded original recording");
+        }
     };
 
     // Saturation section
@@ -271,18 +383,13 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     {
         addAndMakeVisible (slider);
         addAndMakeVisible (label);
-        slider.setSliderStyle (juce::Slider::LinearBarVertical);
+        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 18);
         slider.setRange (min, max, step);
         slider.setValue (value);
-        slider.onValueChange = [this, param, &slider, saturationTypeId]
+        slider.onValueChange = [this, param, &slider]
         {
             *param = static_cast<float> (slider.getValue());
-            if (saturationTypeId > 0)
-            {
-                *audioProcessor.getSaturationTypeParameter() = static_cast<float> (saturationTypeId);
-                *audioProcessor.getSaturationParameter() = 1.0f;
-            }
         };
         label.setJustificationType (juce::Justification::centred);
         label.setFont (juce::FontOptions (14.0f));
@@ -338,21 +445,21 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     addAndMakeVisible (compReleaseSlider);
     addAndMakeVisible (compMakeupSlider);
 
-    compThreshSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    compThreshSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     compThreshSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compThreshSlider.setRange (-60.0, 0.0, 0.1);
     compThreshSlider.setValue (-20.0);
     compThreshSlider.setTextValueSuffix (" dB");
     compThreshSlider.onValueChange = [this] { *audioProcessor.getCompThreshParameter() = static_cast<float> (compThreshSlider.getValue()); };
 
-    compRatioSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    compRatioSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     compRatioSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compRatioSlider.setRange (1.0, 20.0, 0.1);
     compRatioSlider.setValue (4.0);
     compRatioSlider.setTextValueSuffix (":1");
     compRatioSlider.onValueChange = [this] { *audioProcessor.getCompRatioParameter() = static_cast<float> (compRatioSlider.getValue()); };
 
-    compAttackSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    compAttackSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     compAttackSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compAttackSlider.setRange (0.001, 0.1, 0.001);
     compAttackSlider.setValue (0.01);
@@ -360,7 +467,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     compAttackSlider.setTextValueSuffix (" s");
     compAttackSlider.onValueChange = [this] { *audioProcessor.getCompAttackParameter() = static_cast<float> (compAttackSlider.getValue()); };
 
-    compReleaseSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    compReleaseSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     compReleaseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compReleaseSlider.setRange (0.01, 1.0, 0.01);
     compReleaseSlider.setValue (0.1);
@@ -368,7 +475,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     compReleaseSlider.setTextValueSuffix (" s");
     compReleaseSlider.onValueChange = [this] { *audioProcessor.getCompReleaseParameter() = static_cast<float> (compReleaseSlider.getValue()); };
 
-    compMakeupSlider.setSliderStyle (juce::Slider::LinearBarVertical);
+    compMakeupSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     compMakeupSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 20);
     compMakeupSlider.setRange (0.0, 24.0, 0.1);
     compMakeupSlider.setValue (0.0);
@@ -444,7 +551,7 @@ StaticCurrentsPluginAudioProcessorEditor::StaticCurrentsPluginAudioProcessorEdit
     else
     {
         // Fallback if display detection fails
-        setSize (1920, 1080);
+        setSize (1000, 800);
     }
     
     setResizable (true, true);
@@ -593,11 +700,12 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     const int headerHeight = 32;
     const int buttonRowHeight = 44;
     const int fileLabelHeight = 24;
+    const int ttsRowHeight = 70;
     const int progressRowHeight = 40;
     const int profileRowHeight = 30;
     const int gapAfterProfile = 10;
 
-    auto topArea = bounds.removeFromTop (headerHeight + buttonRowHeight + fileLabelHeight
+    auto topArea = bounds.removeFromTop (headerHeight + buttonRowHeight + fileLabelHeight + ttsRowHeight
                                          + progressRowHeight + profileRowHeight + gapAfterProfile);
     topSectionBounds = topArea;
 
@@ -606,8 +714,8 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
 
     auto buttonRow = topArea.removeFromTop (buttonRowHeight);
     const int buttonGap = 8;
-    const int buttonWidth = juce::jmin (160, (buttonRow.getWidth() - buttonGap * 4) / 5);
-    const int totalButtonsWidth = buttonWidth * 5 + buttonGap * 4;
+    const int buttonWidth = juce::jmin (140, (buttonRow.getWidth() - buttonGap * 6) / 7);
+    const int totalButtonsWidth = buttonWidth * 7 + buttonGap * 6;
     auto buttonStrip = buttonRow.withWidth (totalButtonsWidth)
                                  .withX (buttonRow.getX() + (buttonRow.getWidth() - totalButtonsWidth) / 2);
 
@@ -620,8 +728,22 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     playButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
     buttonStrip.removeFromLeft (buttonGap);
     generateButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+    buttonStrip.removeFromLeft (buttonGap);
+    jumbleButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
+    buttonStrip.removeFromLeft (buttonGap);
+    exportButton.setBounds (buttonStrip.removeFromLeft (buttonWidth));
 
     fileLabel.setBounds (topArea.removeFromTop (fileLabelHeight).reduced (10, 0));
+
+    // Text-to-speech text editor section
+    auto ttsRow = topArea.removeFromTop (ttsRowHeight).reduced (60, 0);
+    const int ttsLabelWidth = 120;
+    const int ttsEditorWidth = ttsRow.getWidth() - ttsLabelWidth - 8;
+    const int ttsTotalWidth = ttsLabelWidth + 8 + ttsEditorWidth;
+    auto ttsStrip = ttsRow.withWidth (ttsTotalWidth)
+                          .withX (ttsRow.getX() + (ttsRow.getWidth() - ttsTotalWidth) / 2);
+    ttsLabel.setBounds (ttsStrip.removeFromTop (20).removeFromLeft (ttsLabelWidth));
+    ttsTextEditor.setBounds (ttsStrip.reduced (4));
 
     auto progressRow = topArea.removeFromTop (progressRowHeight).reduced (60, 0);
     const int progressLabelWidth = 90;
@@ -673,7 +795,7 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     const int knobGap = 10;
 
     auto gainArea = gainSectionBounds.reduced (8);
-    const int gainTotalWidth = knobWidth * 2 + knobGap;
+    const int gainTotalWidth = knobWidth * 3 + knobGap * 2;
     auto gainStrip = gainArea.withWidth (gainTotalWidth)
                              .withX (gainArea.getX() + (gainArea.getWidth() - gainTotalWidth) / 2);
     auto knobArea = gainStrip.removeFromLeft (knobWidth);
@@ -687,6 +809,12 @@ void StaticCurrentsPluginAudioProcessorEditor::resized()
     pitchLabel.setJustificationType (juce::Justification::centred);
     pitchLabel.setFont (juce::FontOptions (14.0f));
     pitchSlider.setBounds (knobArea.reduced (2));
+    gainStrip.removeFromLeft (knobGap);
+    knobArea = gainStrip.removeFromLeft (knobWidth);
+    globalOutputLabel.setBounds (knobArea.removeFromTop (22));
+    globalOutputLabel.setJustificationType (juce::Justification::centred);
+    globalOutputLabel.setFont (juce::FontOptions (14.0f));
+    globalOutputSlider.setBounds (knobArea.reduced (2));
 
     auto compArea = compSectionBounds.reduced (8);
     auto compHeaderArea = compArea.removeFromTop (26);
